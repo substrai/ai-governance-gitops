@@ -54,6 +54,7 @@ class GovConfig:
     naming: Naming
     guardrail_defaults: dict[str, str]  # {"customerFacing": <profile>, "internal": <profile>}
     engine_asset: str = field(default=str(ROOT / "engine" / "build"))
+    source_file: str = ""
 
     @classmethod
     def load(cls, path: str | os.PathLike | None = None) -> "GovConfig":
@@ -68,7 +69,7 @@ class GovConfig:
                   guardrails=raw["guardrails"], policy_engine=raw["policyEngine"], gateway=raw["gateway"],
                   github_repo=raw["githubRepo"], naming=Naming.from_dict(raw["naming"]),
                   guardrail_defaults=raw["guardrailDefaults"],
-                  engine_asset=str(ROOT / raw.get("engineAsset", "engine/build")))
+                  engine_asset=str(ROOT / raw.get("engineAsset", "engine/build")), source_file=str(file))
         cfg.validate()
         return cfg
 
