@@ -39,7 +39,9 @@ jobs:
           pip install -r requirements-dev.txt
           npm install -g aws-cdk@2
 
-      - name: Public-repo check (no account IDs, internal IDs or secrets)
+      - name: Public-repo check (no account IDs, internal IDs, organisation names or secrets)
+        env:
+          GOV_BLOCKED_TERMS: ${{ secrets.GOV_BLOCKED_TERMS }}
         run: python scripts/check_public.py
 
       - name: Lint

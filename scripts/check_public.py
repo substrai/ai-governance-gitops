@@ -12,6 +12,7 @@ Run before every push; CI runs it on every pull request.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -55,10 +56,12 @@ def secret_values() -> set[str]:
 
 
 def blocked_terms() -> list[str]:
+    """From config/local.json locally, or the GOV_BLOCKED_TERMS secret (comma-separated) in CI."""
+    terms = [t.strip() for t in os.environ.get("GOV_BLOCKED_TERMS", "").split(",")]
     local = ROOT / "config" / "local.json"
-    if not local.exists():
-        return []
-    return [t.lower() for t in json.loads(local.read_text()).get("blockedTerms", []) if t]
+    if local.exists():
+        terms += json.loads(local.read_text()).get("blockedTerms", [])
+    return sorted({t.lower() for t in terms if t})
 
 
 def main() -> int:
@@ -87,12 +90,12 @@ def main() -> int:
             low = line.lower()
             for term in terms:
                 if term in low:
-                    problems.append(f"{rel}:{n}: blocked term from config/local.json")
+                    problems.append(f"{rel}:{n}: blocked term (organisation name or similar)")
     if problems:
         print("Public-repo check FAILED:")
         print("\n".join(f"  {p}" for p in sorted(set(problems))))
         return 1
-    print(f"Public-repo check passed ({len(files())} files).")
+    print(f"Public-repo check passed ({len(files())} files, {len(terms)} blocked terms).")
     return 0
 
 
