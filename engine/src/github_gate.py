@@ -37,6 +37,7 @@ GATE_ROLE = {
     "gov-audit": "auditor",
 }
 ROLES = {"security", "platform", "admin", "owner", "auditor"}
+PAST = {"approve": "approved", "reject": "rejected"}
 COMMAND = re.compile(r"^/(approve|reject)\s+([a-z]+)\b(.*)$", re.I | re.S)
 
 _secrets = None
@@ -131,13 +132,13 @@ def gate_command(event: dict) -> dict:
                 if owner_role != role:
                     skipped.append(f"`{env}` (run {rid}) belongs to the **{owner_role or 'unknown'}** role, not {role}")
                     continue
-                text = f"{decision.capitalize()}d by the {role} role bot on behalf of @{author}" + (f": {note}" if note else ".")
+                text = f"{PAST[decision].capitalize()} by the {role} role bot on behalf of @{author}" + (f": {note}" if note else ".")
                 _http("POST", f"/repos/{REPO}/actions/runs/{rid}/deployment_protection_rule", token,
                       {"environment_name": env, "state": "approved" if decision == "approve" else "rejected", "comment": text[:1000]})
                 done.append(f"`{env}` (run {rid})")
         if not done:
             raise GateError("Nothing to decide for this role. " + "; ".join(skipped))
-        msg = f"**{bot}** {decision}d {', '.join(done)}." + (f"\n\nNot touched: {'; '.join(skipped)}." if skipped else "")
+        msg = f"**{bot}** {PAST[decision]} {', '.join(done)}." + (f"\n\nNot touched: {'; '.join(skipped)}." if skipped else "")
         reply(msg)
         return {"ok": True, "decision": decision, "role": role, "gates": done, "skipped": skipped}
     except GateError as ex:
