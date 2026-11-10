@@ -80,7 +80,11 @@ def gh_request(e: dict) -> dict:
     if len(m["purpose"]) < 10:
         raise E.GovError("purpose must be at least 10 characters.")
     existing = E.get_state(agent)
-    if existing and existing.get("stage") not in ("REJECTED", "RETIRED") and not (
+    if existing and existing.get("stage") == "RETIRED":
+        # the registry keeps the retired agent's record and versions for the audit trail, so the name cannot be reused
+        raise E.GovError(f"'{agent}' belonged to an agent retired on {str(existing.get('retiredAt', ''))[:10] or 'an earlier date'}; "
+                         "its registry history is kept, so choose a new name.")
+    if existing and existing.get("stage") != "REJECTED" and not (
             existing.get("stage") == "REQUESTED" and existing.get("pr") == int(e.get("pr") or 0)):
         raise E.GovError(f"'{agent}' already exists and is {existing['stage']}.")
     risk = m.get("risk") or {}
@@ -173,6 +177,14 @@ def gh_release(e: dict) -> dict:
 
 # ----------------------------------------------------------------------------- GOV-04 change
 
+def _abandon_pending_change(agent: str, st: dict, why: str) -> dict:
+    """A planned change that never applied (or is superseded) is dropped, and the agent returns to ACTIVE."""
+    pending = st.get("pendingChange") or {}
+    E.update_state(agent, stage="ACTIVE", pendingChange=None)
+    E.log_event(agent, "CHANGE_ABANDONED", "gov-engine", changeType=pending.get("type"), version=pending.get("version"), reason=why)
+    return E.require_state(agent)
+
+
 def gh_change_classify(e: dict) -> dict:
     agent = _agent(e)
     st = E.require_state(agent)
@@ -236,9 +248,11 @@ def gh_review_decide(e: dict) -> dict:
 def gh_retire_plan(e: dict) -> dict:
     agent = _agent(e)
     st = E.require_state(agent)
-    E.require_stage(st, "ACTIVE", "SUSPENDED", "BUILD_APPROVED", "REJECTED", "RETIRING", "DETECTED")
+    E.require_stage(st, "ACTIVE", "SUSPENDED", "BUILD_APPROVED", "REJECTED", "RETIRING", "DETECTED", "CHANGE_PENDING")
     m = e.get("manifest") or {}
     retire = m.get("retire") or {}
+    if st.get("stage") == "CHANGE_PENDING":
+        st = _abandon_pending_change(agent, st, "the agent is being retired")
     if str(retire.get("confirm", "")).strip().lower() != agent:
         raise E.GovError(f"Set retire.confirm to the agent's exact name ('{agent}') to retire it.")
     login = _requester(e)
@@ -314,6 +328,9 @@ def gh_plan(e: dict) -> dict:
         res, step, gate, apply = gh_submit(e), "release", "gov-release", "gh_release"
     elif status == "active" and stage_now in ("ACTIVE", "CHANGE_PENDING"):
         pending = st.get("pendingChange") or {}
+        if stage_now == "CHANGE_PENDING" and pending.get("version") != str(m.get("version")):
+            st = _abandon_pending_change(agent, st, f"superseded by version {m.get('version')}")
+            stage_now, pending = "ACTIVE", {}
         if stage_now == "CHANGE_PENDING" and pending.get("version") == str(m.get("version")):
             res = {"route": "Approval" if pending.get("needsApproval") else "PreApproved",
                    "message": f"{pending.get('type')} change to {pending.get('version')} is already planned."}
