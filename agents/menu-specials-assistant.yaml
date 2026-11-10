@@ -1,5 +1,5 @@
 name: menu-specials-assistant
-status: requested
+status: build
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
