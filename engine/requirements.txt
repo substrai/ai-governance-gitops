@@ -1,2 +1,5 @@
 # Pinned: this release ships the agent-registry-control and bedrock-agentcore-control clients the engine uses
 boto3==1.43.123
+# GitHub App authentication for the role bots (RS256 JWT)
+PyJWT==2.10.1
+cryptography==46.0.3

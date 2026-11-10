@@ -6,7 +6,8 @@ import json
 from aws_cdk import (CfnOutput, Duration, RemovalPolicy, Stack, aws_athena as athena, aws_cloudtrail as cloudtrail,
                      aws_cloudwatch as cwatch, aws_cloudwatch_actions as cw_actions, aws_config as config,
                      aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as targets, aws_glue as glue,
-                     aws_iam as iam, aws_lambda as _lambda, aws_s3 as s3, aws_sns as sns, aws_ssm as ssm)
+                     aws_iam as iam, aws_lambda as _lambda, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_sns as sns,
+                     aws_ssm as ssm)
 from constructs import Construct
 
 from config import GovConfig
@@ -140,7 +141,18 @@ class NoUiGovernanceStack(Stack):
                                                "METRIC_NAMESPACE": n.metric_namespace,
                                                "GUARDRAIL_CUSTOMER_FACING": gov.guardrail_defaults["customerFacing"],
                                                "GUARDRAIL_INTERNAL": gov.guardrail_defaults["internal"],
-                                               "AGENT_ENDPOINT_BASE": n.agent_endpoint_base})
+                                               "AGENT_ENDPOINT_BASE": n.agent_endpoint_base,
+                                               "GITHUB_REPO": gov.github_repo, "GITHUB_APP_SECRET_PREFIX": "ai-gov/github-app/",
+                                               "GOV_OPERATORS": ",".join(gov.operators)})
+
+        # ---------------------------------------------------------------- GitHub role bots
+        # One secret per role bot (GitHub App). Values {"appId", "privateKey"} are uploaded once by an
+        # administrator; CloudFormation never sees the keys. Only the engine can read them.
+        for role in ("security", "platform", "admin", "owner", "auditor", "engine"):
+            secret = secretsmanager.Secret(self, f"GitHubApp{role.capitalize()}", secret_name=f"ai-gov/github-app/{role}",
+                                           description=f"GitHub App credentials for the {role} role bot",
+                                           removal_policy=RemovalPolicy.RETAIN)
+            secret.grant_read(engine_role)
 
         # ---------------------------------------------------------------- runbooks
         for name, content in documents(acct, automation_role.role_arn, approvals_topic.topic_arn, POLICY_ENGINE, GATEWAY, gov).items():

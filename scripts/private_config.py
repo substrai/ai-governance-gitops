@@ -33,7 +33,7 @@ def private_values(cfg: dict) -> list[str]:
         elif isinstance(v, str) and len(v) >= 4 and not re.fullmatch(r"[a-z]{2}-[a-z]+-\d|\d{1,3}", v):
             vals.add(v)
 
-    walk({k: v for k, v in cfg.items() if k not in ("region", "githubRepo")})
+    walk({k: v for k, v in cfg.items() if k not in ("region", "githubRepo", "operators")})
     walk(list(cfg.get("guardrails", {})))  # guardrail profile names are keys, not values
     for term in cfg.get("blockedTerms", []):
         vals.update({term, term.capitalize(), term.upper()})

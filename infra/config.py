@@ -54,6 +54,7 @@ class GovConfig:
     github_oidc_subject_prefix: str  # GitHub's "sub" claim prefix, e.g. repo:owner@<id>/name@<id> (immutable subjects)
     naming: Naming
     guardrail_defaults: dict[str, str]  # {"customerFacing": <profile>, "internal": <profile>}
+    operators: tuple[str, ...] = ()     # GitHub logins allowed to issue /approve and /reject
     engine_asset: str = field(default=str(ROOT / "engine" / "build"))
     source_file: str = ""
 
@@ -70,7 +71,7 @@ class GovConfig:
                   guardrails=raw["guardrails"], policy_engine=raw["policyEngine"], gateway=raw["gateway"],
                   github_repo=raw["githubRepo"],
                   github_oidc_subject_prefix=raw.get("githubOidcSubjectPrefix", f"repo:{raw['githubRepo']}"), naming=Naming.from_dict(raw["naming"]),
-                  guardrail_defaults=raw["guardrailDefaults"],
+                  guardrail_defaults=raw["guardrailDefaults"], operators=tuple(raw.get("operators", [])),
                   engine_asset=str(ROOT / raw.get("engineAsset", "engine/build")), source_file=str(file))
         cfg.validate()
         return cfg

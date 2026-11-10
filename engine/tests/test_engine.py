@@ -58,3 +58,14 @@ def test_username(engine):
 def test_truthy(engine):
     assert engine.truthy("True") and engine.truthy("yes") and engine.truthy(1)
     assert not engine.truthy("false") and not engine.truthy("")
+
+
+def test_parse_gate_commands():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from github_gate import GateError, parse_command
+    assert parse_command("/approve security looks good") == ("approve", "security", "looks good", None)
+    assert parse_command("/APPROVE admin run=42 ship it") == ("approve", "admin", "ship it", 42)
+    assert parse_command("/reject security requester cannot self-approve") [0:2] == ("reject", "security")
+    for bad in ("/reject security", "/approve janitor", "approve security", ""):
+        with pytest.raises(GateError):
+            parse_command(bad)
