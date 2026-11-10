@@ -38,8 +38,11 @@ def main(name: str) -> int:
     rows = athena.get_query_results(QueryExecutionId=qid, MaxResults=51)["ResultSet"]["Rows"]
     secrets = sorted((v for v in os.environ.get("GOV_PRIVATE_VALUES", "").splitlines() if v), key=len, reverse=True)
 
+    opaque = re.compile(r'("(?:registryRecord|record|recordId|runtimeId|policyId|execution|evidence)"\s*:\s*")[^"]+(")')
+
     def clean(x: str | None) -> str:
-        x = (x or "").replace("|", "\\|").replace("\n", " ")[:160]
+        x = opaque.sub(r"\1***\2", x or "")  # per-agent resource IDs are not in the masking list
+        x = x.replace("|", "\\|").replace("\n", " ")[:160]
         for v in secrets:
             x = re.sub(re.escape(v), "***", x, flags=re.I)
         return x
