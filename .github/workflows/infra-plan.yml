@@ -1,0 +1,86 @@
+name: infra-plan
+
+# On every pull request that touches infrastructure: synthesize with the real (private) config,
+# diff against what is deployed, and post the redacted diff on the pull request.
+# Read-only: assumes gh-infra-plan, which cannot change anything in AWS.
+on:
+  pull_request:
+    paths: ["infra/**", "engine/**", "scripts/**", ".github/workflows/infra-*.yml"]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: infra-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # Pull requests from forks get no AWS credentials; skip them cleanly.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: |
+          pip install -r requirements-dev.txt
+          npm install -g aws-cdk@2
+
+      - name: AWS credentials (gh-infra-plan, OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-infra-plan
+          role-session-name: infra-plan-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Private config (masked in logs)
+        run: python scripts/private_config.py fetch
+
+      - name: Build engine package
+        run: ./scripts/build_engine.sh
+
+      - name: Synth
+        working-directory: infra
+        run: cdk synth --quiet AIGovernance-NoUI
+
+      - name: Diff against deployed stack
+        working-directory: infra
+        run: |
+          set +e
+          cdk diff AIGovernance-NoUI --method=template --no-color > ../diff.txt 2>&1
+          echo "exit=$?" >> ../diff.txt
+          exit 0
+
+      - name: Post redacted diff on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python scripts/private_config.py redact < diff.txt \
+            | grep -v -e "^AI agent detected" -e "feature flags" -e "addResourceDependency" -e "^\[WARNING\]" \
+            | tail -c 60000 > diff.redacted.txt
+          {
+            echo "### Infrastructure plan: \`AIGovernance-NoUI\`"
+            echo
+            echo "Redacted: account and resource identifiers are shown as \`***\`."
+            echo
+            echo '```'
+            cat diff.redacted.txt
+            echo '```'
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none
+          grep -q "Error" diff.redacted.txt && { echo "::error::cdk diff failed (see the PR comment)"; exit 1; } || true

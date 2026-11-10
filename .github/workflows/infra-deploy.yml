@@ -1,0 +1,61 @@
+name: infra-deploy
+
+# Deploys AIGovernance-NoUI after a change to infrastructure lands on main.
+# The job waits at the infra-prod environment gate until the Admin role bot approves it;
+# only then can it assume gh-infra-deploy. GitHubBootstrap is never deployed from here.
+on:
+  push:
+    branches: [main]
+    paths: ["infra/**", "engine/**", ".github/workflows/infra-deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: infra-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: infra-prod
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: |
+          pip install -r requirements-dev.txt
+          npm install -g aws-cdk@2
+
+      - name: AWS credentials (gh-infra-deploy, OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-infra-deploy
+          role-session-name: infra-deploy-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Private config (masked in logs)
+        run: python scripts/private_config.py fetch
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Build engine package
+        run: ./scripts/build_engine.sh
+
+      - name: Deploy AIGovernance-NoUI
+        working-directory: infra
+        run: cdk deploy AIGovernance-NoUI --require-approval never --no-color --progress events
