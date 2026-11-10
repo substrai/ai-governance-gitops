@@ -14,7 +14,7 @@ risk:
   externalTools: false
   autonomous: false
 roles:
-  requestedBy: security
+  requestedBy: developer
   owner: developer
 build:
   guardrail: employee-data
