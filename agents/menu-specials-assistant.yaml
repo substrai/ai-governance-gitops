@@ -1,11 +1,11 @@
 name: menu-specials-assistant
-status: retired
+status: requested
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
 dataClassification: INTERNAL
 platform: AWS AgentCore
-version: 1.1.0
+version: 1.0.0
 risk:
   personalData: false
   customerFacing: false
@@ -18,7 +18,3 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
-actingRole: platform
-retire:
-  confirm: menu-specials-assistant
-  reason: Recording take interrupted; agent retired before the final take
