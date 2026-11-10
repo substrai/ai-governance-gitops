@@ -162,8 +162,8 @@ def forbidden_roles(env: str, st: dict) -> dict[str, str]:
     pending = st.get("pendingChange") or {}
     retirement = st.get("retirement") or {}
     rules = {
-        "gov-intake": {"requestedBy": roles.get("requestedBy")},
-        "gov-release": {"owner": roles.get("owner"), "submittedBy": st.get("submittedByRole")},
+        "gov-intake": {"requester": roles.get("requestedBy")},
+        "gov-release": {"owner": roles.get("owner"), "release submitter": st.get("submittedByRole")},
         "gov-change": {"change requester": pending.get("requestedByRole"), "owner": roles.get("owner")},
         "gov-review": {"owner": roles.get("owner")},
         "gov-retire": {"retirement requester": retirement.get("requestedByRole")},

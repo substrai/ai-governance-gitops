@@ -19,7 +19,15 @@ import tempfile
 import yaml
 
 
+def mask_private_values() -> None:
+    """Register private values with GitHub's log masking (defense in depth; the engine already redacts)."""
+    for v in os.environ.get("GOV_PRIVATE_VALUES", "").splitlines():
+        if v.strip():
+            print(f"::add-mask::{v.strip()}")
+
+
 def main() -> int:
+    mask_private_values()
     ap = argparse.ArgumentParser()
     ap.add_argument("action")
     ap.add_argument("--agent")

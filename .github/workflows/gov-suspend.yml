@@ -27,6 +27,9 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  GOV_PRIVATE_VALUES: ${{ secrets.GOV_PRIVATE_VALUES }}
+
 jobs:
   request:
     runs-on: ubuntu-latest

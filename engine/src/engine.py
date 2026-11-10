@@ -376,7 +376,7 @@ def build_agent(agent: str, st: dict, e: dict, builder: str) -> dict:
     built.append(f"registry record {links['registryRecord']['id']} (DRAFT)")
     update_state(agent, links=links, endpoint=endpoint, builtBy=builder, builtAt=iso())
     log_event(agent, "BUILT", builder, links=links)
-    return {"message": "Built: " + "; ".join(built) + ". Next: GOV-03-SubmitRelease."}
+    return {"message": "Built: " + "; ".join(built) + ". Next: submit it for release."}
 
 
 # --------------------------------------------------------------------------- GOV-03 release
@@ -499,7 +499,7 @@ def submit_release(agent: str, st: dict, who: str) -> dict:
         r = registry_wait(rid)
     update_state(agent, stage="SUBMITTED", submittedBy=who, submittedAt=iso())
     log_event(agent, "SUBMITTED_FOR_RELEASE", who, registryStatus=r["status"], evidence=res["evidence"])
-    return {"message": f"All gates passed. Registry record {rid} is {r['status']}; Security or Admin approves it in the Agent Registry console."}
+    return {"message": f"All release gates passed. Registry record {rid} is {r['status']}; the security role approves the release."}
 
 
 def find_by_record(record_id: str) -> dict | None:
