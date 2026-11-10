@@ -145,7 +145,12 @@ def console_s3_url(key: str) -> str:
 
 
 def alert(subject: str, message: str) -> None:
+    """SNS (legacy) plus a GitHub issue assigned to the operators, which GitHub emails."""
     sns.publish(TopicArn=ALERT_TOPIC, Subject=subject[:99], Message=message)
+    try:
+        github_gate.open_issue(subject, message, ["gov-alert"])
+    except Exception as ex:  # an alert must never break the action that raised it
+        print(f"alert issue not created: {ex}")
 
 
 def metric(name: str, value: float, **dims) -> None:
@@ -284,6 +289,11 @@ def a_build(e: dict) -> dict:
     roles = roles_of(builder)
     if "Developer" in roles and not roles & {"Platform", "Admin"} and builder != st["owner"]:
         raise GovError(f"{builder} is a developer and can only build agents they own (owner: {st['owner']}).")
+    return build_agent(agent, st, e, builder)
+
+
+def build_agent(agent: str, st: dict, e: dict, builder: str) -> dict:
+    """Create or link everything the agent needs (shared by the console runbook and GitHub workflows)."""
     links = dict(st.get("links") or {})
     built = []
 
@@ -468,8 +478,11 @@ def a_submit(e: dict) -> dict:
     agent = e["AgentName"].strip().lower()
     st = require_state(agent)
     require_stage(st, "BUILD_APPROVED")
-    who = executor(e["exec"])
-    res = a_gates(e)
+    return submit_release(agent, st, executor(e["exec"]))
+
+
+def submit_release(agent: str, st: dict, who: str) -> dict:
+    res = a_gates({"AgentName": agent})
     failed = [f"{c['label']} ({c['detail']})" for c in res["checks"] if c["required"] and not c["ok"]]
     if failed:
         log_event(agent, "RELEASE_BLOCKED", who, failed=failed, evidence=res["evidence"])
@@ -551,16 +564,20 @@ def a_classify_change(e: dict) -> dict:
     agent = e["AgentName"].strip().lower()
     st = require_state(agent)
     require_stage(st, "ACTIVE")
-    ct = e["ChangeType"]
-    if not re.fullmatch(r"\d+\.\d+\.\d+", e["NewVersion"]):
+    return classify_change(agent, st, e["ChangeType"], e["Summary"], e["NewVersion"], executor(e["exec"]))
+
+
+def classify_change(agent: str, st: dict, ct: str, summary: str, version: str, who: str, **extra) -> dict:
+    if ct not in ("PROMPT", "MODEL", "TOOL", "PERMISSION", "DATA_SOURCE"):
+        raise GovError("Change type must be PROMPT, MODEL, TOOL, PERMISSION or DATA_SOURCE.")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise GovError("NewVersion must look like 1.2.0")
     needs = ct in REAPPROVAL or (ct == "MODEL" and st["riskTier"] != "LOW")
-    who = executor(e["exec"])
-    update_state(agent, stage="CHANGE_PENDING", pendingChange={"type": ct, "summary": e["Summary"], "version": e["NewVersion"],
-                                                               "requestedBy": who, "needsApproval": needs})
-    log_event(agent, "CHANGE_REQUESTED", who, changeType=ct, version=e["NewVersion"], needsApproval=needs, summary=e["Summary"])
+    update_state(agent, stage="CHANGE_PENDING", pendingChange={"type": ct, "summary": summary, "version": version,
+                                                               "requestedBy": who, "needsApproval": needs, **extra})
+    log_event(agent, "CHANGE_REQUESTED", who, changeType=ct, version=version, needsApproval=needs, summary=summary)
     return {"route": "Approval" if needs else "PreApproved",
-            "message": f"{ct} change to {e['NewVersion']} " + ("needs Security approval." if needs else "is pre-approved by policy.")}
+            "message": f"{ct} change to {version} " + ("needs Security approval." if needs else "is pre-approved by policy.")}
 
 
 def a_apply_change(e: dict) -> dict:
@@ -576,6 +593,14 @@ def a_apply_change(e: dict) -> dict:
             raise GovError(f"Change rejected by {d['approver']}; version {st['version']} stays live.")
         separation_check(agent, d["approver"], {"change requester": ch.get("requestedBy"), "owner": st.get("owner")}, "approve this change")
         decided_by = d["approver"]
+    return apply_change(agent, st, decided_by)
+
+
+def apply_change(agent: str, st: dict, decided_by: str) -> dict:
+    ch = st.get("pendingChange") or {}
+    applied = []
+    if ch.get("type") == "TOOL" and ch.get("tools") is not None:
+        applied.append(apply_tool_policy(agent, st, ch["tools"]))
     rid = st["links"]["registryRecord"]["id"]
     registry_wait(rid)
     if reg.get_registry_record(registryId=REGISTRY_ID, recordId=rid).get("recordVersion") != ch["version"]:
@@ -591,8 +616,31 @@ def a_apply_change(e: dict) -> dict:
     registry_wait(rid)
     update_state(agent, stage="ACTIVE", version=ch["version"], pendingChange=None,
                  lastChange=f"{ch['type']} {ch['version']} by {ch.get('requestedBy')}, approved by {decided_by}")
-    log_event(agent, "CHANGE_APPLIED", decided_by, changeType=ch["type"], version=ch["version"])
-    return {"message": f"Version {ch['version']} is live (approved by {decided_by})."}
+    log_event(agent, "CHANGE_APPLIED", decided_by, changeType=ch["type"], version=ch["version"], applied=applied)
+    return {"message": f"Version {ch['version']} is live (approved by {decided_by})." + (f" Applied: {'; '.join(applied)}." if applied else "")}
+
+
+def apply_tool_policy(agent: str, st: dict, tools: list) -> str:
+    """TOOL change: the agent's Cedar policy on the tools gateway allows exactly the listed tools."""
+    links = st.get("links") or {}
+    role, pe = (links.get("iamRole") or {}).get("id"), (links.get("policyEngine") or {}).get("id")
+    gw = (links.get("gateway") or {}).get("id") or DEFAULT_GATEWAY
+    if not (role and pe):
+        raise GovError(f"'{agent}' has no IAM role or policy engine linked; build it first.")
+    if not tools or not all(re.fullmatch(r"[A-Za-z0-9_-]+___[A-Za-z0-9_:/.-]+", t) for t in tools):
+        raise GovError("tools must be a non-empty list like Target___tool_name.")
+    actions = ", ".join(f'AgentCore::Action::"{t}"' for t in tools)
+    statement = (f'permit(\n  principal == AgentCore::IamEntity::"arn:aws:sts::{ACCOUNT}:assumed-role/{role}",\n'
+                 f'  action in [{actions}],\n'
+                 f'  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:gateway/{gw}"\n);')
+    name = "gov_" + re.sub(r"[^a-z0-9_]", "_", agent) + "_tools"
+    existing = next((p for p in ac.list_policies(policyEngineId=pe).get("policies", []) if p.get("name") == name), None)
+    if existing:
+        ac.update_policy(policyEngineId=pe, policyId=existing["policyId"], definition={"cedar": {"statement": statement}})
+        return f"Cedar policy {name} updated ({len(tools)} tools)"
+    ac.create_policy(policyEngineId=pe, name=name, definition={"cedar": {"statement": statement}},
+                     description=f"Tools allowed for governed agent {agent} (managed by GOV-04)")
+    return f"Cedar policy {name} created ({len(tools)} tools)"
 
 
 # --------------------------------------------------------------------------- GOV-05 review
@@ -607,6 +655,12 @@ def a_review_snapshot(e: dict) -> dict:
     agent = e["AgentName"].strip().lower()
     st = require_state(agent)
     require_stage(st, "ACTIVE", "SUSPENDED")
+    pack = review_pack(agent, st)
+    update_state(agent, reviewExecution=e["exec"])
+    return {"summary": pack["summary"], "packUrl": console_s3_url(pack["key"])}
+
+
+def review_pack(agent: str, st: dict) -> dict:
     checks = release_checks(st)
     links = st.get("links") or {}
     g = links.get("guardrail") or {}
@@ -621,12 +675,11 @@ def a_review_snapshot(e: dict) -> dict:
             "recentEvents": [{"at": x["at"], "action": x["action"], "actor": x["actor"]} for x in events[-25:]],
             "checklist": ["Still needed by the business", "Access is minimal", "Safety results acceptable", "Registry entry accurate"]}
     key = put_evidence(f"evidence/agents/{agent}/review-{iso()}.json", pack)
-    update_state(agent, reviewExecution=e["exec"])
     failing = [c["label"] for c in checks if c["required"] and not c["ok"]]
     summary = (f"Review pack for {agent} (risk {st['riskTier']}, owner {st['owner']}). Gates: "
                + ("all passing" if not failing else "FAILING " + ", ".join(failing))
                + f". Guardrail interventions in 90 days: {int(usage.get('guardrailInterventions90d', 0))}.")
-    return {"summary": summary, "packUrl": console_s3_url(key)}
+    return {"summary": summary, "key": key, "pack": pack}
 
 
 def a_review_decide(e: dict) -> dict:
@@ -634,6 +687,11 @@ def a_review_decide(e: dict) -> dict:
     st = require_state(agent)
     d = approval(e["exec"], "SignOff")
     separation_check(agent, d["approver"], {"owner": st.get("owner")}, "sign off its review")
+    return record_review(agent, st, d["approver"], d["comment"], d["status"] == "Approved")
+
+
+def record_review(agent: str, st: dict, approver: str, comment: str, approved: bool) -> dict:
+    d = {"approver": approver, "comment": comment or "", "status": "Approved" if approved else "Rejected"}
     m = re.search(r"outcome\s*=\s*(PASS|CHANGES_REQUIRED|RETIRE)", d["comment"], re.I)
     outcome = m.group(1).upper() if m else ("PASS" if d["status"] == "Approved" else "CHANGES_REQUIRED")
     due = now() + timedelta(days=REVIEW_DAYS.get(st["riskTier"], 180))
@@ -659,9 +717,15 @@ def reviews_due() -> dict:
                     continue
             except ClientError:
                 pass
-        r = ssm.start_automation_execution(DocumentName="GOV-05-PeriodicReview", Parameters={"AgentName": [st["agent"]]})
-        started.append(st["agent"])
-        log_event(st["agent"], "REVIEW_STARTED", "scheduler", execution=r["AutomationExecutionId"], due=st["nextReviewDue"])
+        try:
+            github_gate.dispatch_workflow("gov-review.yml", {"agent": st["agent"]})
+            started.append(st["agent"])
+            log_event(st["agent"], "REVIEW_STARTED", "scheduler", via="github:gov-review.yml", due=st["nextReviewDue"])
+        except Exception as ex:  # until the GitHub workflow exists, fall back to the console runbook
+            r = ssm.start_automation_execution(DocumentName="GOV-05-PeriodicReview", Parameters={"AgentName": [st["agent"]]})
+            started.append(st["agent"])
+            log_event(st["agent"], "REVIEW_STARTED", "scheduler", execution=r["AutomationExecutionId"], due=st["nextReviewDue"],
+                      githubError=str(ex)[:200])
     return {"started": started}
 
 
@@ -709,9 +773,13 @@ def a_retire_plan(e: dict) -> dict:
     who = executor(e["exec"])
     if not roles_of(who) & {"Admin", "Platform"}:
         raise GovError(f"{who} is not Admin or Platform and cannot retire agents.")
+    return plan_retirement(agent, st, who, e.get("Reason", ""))
+
+
+def plan_retirement(agent: str, st: dict, who: str, reason: str) -> dict:
     job = st.get("retirement") if st.get("stage") == "RETIRING" else None
     steps = job["steps"] if job else retirement_plan(st)
-    update_state(agent, retirement={"steps": steps, "requestedBy": who, "reason": e.get("Reason", "")}, stageBeforeRetire=st["stage"])
+    update_state(agent, retirement={"steps": steps, "requestedBy": who, "reason": reason}, stageBeforeRetire=st["stage"])
     lines = [f"{s['action']}: {s['label']} {s['id']} ({s['why']})" for s in steps]
     return {"plan": " | ".join(lines) or "Nothing linked", "requester": who}
 
@@ -752,6 +820,14 @@ def a_retire_execute(e: dict) -> dict:
         log_event(agent, "RETIREMENT_REJECTED", d["approver"], comment=d["comment"])
         raise GovError(f"Retirement rejected by {d['approver']}.")
     separation_check(agent, d["approver"], {"retirement requester": job.get("requestedBy")}, "approve its retirement")
+    return execute_retirement(agent, st, d["approver"])
+
+
+def execute_retirement(agent: str, st: dict, approver: str) -> dict:
+    job = st.get("retirement") or {}
+    if not job.get("steps"):
+        raise GovError(f"No retirement plan for '{agent}'.")
+    d = {"approver": approver}
     update_state(agent, stage="RETIRING")
     log_event(agent, "RETIREMENT_STARTED", job.get("requestedBy", "?"), approvedBy=d["approver"],
               plan=[(s["action"], s["kind"], s["id"]) for s in job["steps"]])
@@ -815,22 +891,56 @@ def a_suspend(e: dict) -> dict:
             raise GovError(f"{e.get('Action', 'Suspend')} rejected by {d['approver']}.")
         decided_by = d["approver"]
     if e.get("Action") == "Reinstate":
-        require_stage(st, "SUSPENDED")
+        return reinstate_agent(agent, st, decided_by, e.get("Reason", ""))
+    return suspend_agent(agent, st, decided_by, e.get("Reason", ""))
+
+
+def reinstate_agent(agent: str, st: dict, decided_by: str, reason: str) -> dict:
+    require_stage(st, "SUSPENDED")
+    if True:  # keeps the original block's indentation; removed when the console runbooks are retired
         role = ((st.get("links") or {}).get("iamRole") or {}).get("id")
         if role:
             try:
                 iam.delete_role_policy(RoleName=role, PolicyName="gov-suspended")
             except ClientError:
                 pass
+        registry = registry_set_status(st, "APPROVED", f"Reinstated by {decided_by}: {reason}")
         update_state(agent, stage="ACTIVE", suspendedReason=None)
-        log_event(agent, "REINSTATED", decided_by, reason=e.get("Reason"))
-        return {"message": f"{agent} reinstated by {decided_by}."}
+        log_event(agent, "REINSTATED", decided_by, reason=reason, registry=registry)
+        return {"message": f"{agent} reinstated by {decided_by}." + (f" Registry record {registry}." if registry else "")}
+
+
+def suspend_agent(agent: str, st: dict, decided_by: str, reason: str) -> dict:
     require_stage(st, "ACTIVE", "CHANGE_PENDING")
-    roles = suspend_role(agent, st, e.get("Reason", ""))
-    update_state(agent, stage="SUSPENDED", suspendedReason=e.get("Reason", ""), suspendedAt=iso())
-    log_event(agent, "SUSPENDED", decided_by, reason=e.get("Reason"), deniedRoles=roles)
-    alert(f"Agent suspended: {agent}", f"{agent} was suspended ({decided_by}). Reason: {e.get('Reason')}")
-    return {"message": f"{agent} suspended: model, gateway and runtime calls denied on {', '.join(roles) or 'no role'}."}
+    roles = suspend_role(agent, st, reason)
+    registry = registry_set_status(st, "REJECTED", f"Suspended by {decided_by}: {reason}")
+    update_state(agent, stage="SUSPENDED", suspendedReason=reason, suspendedAt=iso())
+    log_event(agent, "SUSPENDED", decided_by, reason=reason, deniedRoles=roles, registry=registry)
+    alert(f"Agent suspended: {agent}", f"{agent} was suspended ({decided_by}). Reason: {reason}")
+    return {"message": f"{agent} suspended: model, gateway and runtime calls denied on {', '.join(roles) or 'no role'}"
+                       + (f"; registry record {registry}." if registry else ".")}
+
+
+def registry_set_status(st: dict, status: str, reason: str) -> str | None:
+    """Move an agent's registry record to APPROVED or REJECTED, re-opening a REJECTED record first when needed."""
+    rid = ((st.get("links") or {}).get("registryRecord") or {}).get("id")
+    if not rid:
+        return None
+    r = registry_wait(rid)
+    if r["status"] == status:
+        return f"{rid} already {status}"
+    if status == "APPROVED" and r["status"] in ("REJECTED", "DRAFT"):
+        if r["status"] == "REJECTED":  # a real content update returns it to DRAFT
+            desc = r.get("description") or st.get("purpose", "")
+            retry(lambda: reg.update_registry_record(registryId=REGISTRY_ID, recordId=rid,
+                                                     description={"optionalValue": desc[:-1] if desc.endswith(" ") else desc + " "}))
+            registry_wait(rid)
+            time.sleep(3)
+        retry(lambda: reg.submit_registry_record_for_approval(registryId=REGISTRY_ID, recordId=rid))
+        registry_wait(rid)
+        time.sleep(2)
+    retry(lambda: reg.update_registry_record_status(registryId=REGISTRY_ID, recordId=rid, status=status, statusReason=reason[:1000]))
+    return f"{rid} {registry_wait(rid)['status']}"
 
 
 # --------------------------------------------------------------------------- scheduled: shadow agents, metrics
@@ -977,11 +1087,10 @@ def on_config_change(detail: dict) -> dict:
         if not role or st.get("stage") != "ACTIVE":
             continue
         if iam.get_role(RoleName=role)["Role"]["RoleId"] == role_id:
-            r = ssm.start_automation_execution(DocumentName="GOV-08-SuspendAgent", Parameters={
-                "AgentName": [st["agent"]], "Action": ["Suspend"], "Trigger": ["AutomaticCritical"],
-                "Reason": [f"AWS Config: {rule} is NON_COMPLIANT (admin-level policy on {role})"]})
-            log_event(st["agent"], "AUTO_SUSPEND_STARTED", "aws-config", rule=rule, execution=r["AutomationExecutionId"])
-            return {"suspending": st["agent"]}
+            log_event(st["agent"], "AUTO_SUSPEND_STARTED", "aws-config", rule=rule)
+            suspend_agent(st["agent"], st, "automatic (critical control failure)",
+                          f"AWS Config: {rule} is NON_COMPLIANT (admin-level policy on {role})")
+            return {"suspended": st["agent"]}
     return {"alerted": rule}
 
 
@@ -1016,8 +1125,13 @@ def handler(event, context):
                 log_event(st["agent"], "RELEASE_PENDING_APPROVAL", "agent-registry", record=event["detail"].get("registryRecordId"))
             return {"ok": True}
         action = event.get("action")
+        if isinstance(action, str) and action.startswith("gh_"):
+            import gh_actions
+            if action not in gh_actions.ACTIONS:
+                return {"error": f"Unknown action {action}"}
+            return gh_actions.ACTIONS[action](event)
         if action not in ACTIONS:
             return {"error": f"Unknown action {action}"}
         return ACTIONS[action](event)
-    except GovError as ex:
+    except (GovError, github_gate.GateError) as ex:
         return {"error": str(ex)}

@@ -69,3 +69,31 @@ def test_parse_gate_commands():
     for bad in ("/reject security", "/approve janitor", "approve security", ""):
         with pytest.raises(GateError):
             parse_command(bad)
+
+
+def test_github_identity_helpers():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import github_gate as G
+    assert G.role_of_bot("substrai-gov-security[bot]") == "security"
+    assert G.role_of_bot("substrai-gov-janitor[bot]") is None
+    assert G.role_of_bot("gauravSsinha") is None
+    assert G.agent_of_run({"display_title": "intake · catering-order-assistant"}) == "catering-order-assistant"
+    assert G.agent_of_run({"display_title": "Update README"}) is None
+
+
+@pytest.mark.parametrize("env, state, role, blocked", [
+    ("gov-intake", {"roles": {"requestedBy": "security"}}, "security", True),
+    ("gov-intake", {"roles": {"requestedBy": "developer"}}, "security", False),
+    ("gov-release", {"roles": {"owner": "developer"}, "submittedByRole": "security"}, "security", True),
+    ("gov-release", {"roles": {"owner": "developer"}, "submittedByRole": "developer"}, "security", False),
+    ("gov-change", {"roles": {"owner": "developer"}, "pendingChange": {"requestedByRole": "security"}}, "security", True),
+    ("gov-review", {"roles": {"owner": "owner"}}, "owner", True),
+    ("gov-review", {"roles": {"owner": "developer"}}, "owner", False),
+    ("gov-retire", {"retirement": {"requestedByRole": "admin"}}, "admin", True),
+    ("gov-suspend", {"suspensionRequestedByRole": "security"}, "security", True),
+    ("gov-build", {"roles": {"requestedBy": "platform"}}, "platform", False),
+])
+def test_separation_of_duties(env, state, role, blocked):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import github_gate as G
+    assert (role in G.forbidden_roles(env, state)) is blocked
