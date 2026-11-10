@@ -1,0 +1,58 @@
+name: ci
+
+# Credential-free checks on every pull request and push to main.
+# No AWS access: synth uses config/example.json.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOV_CONFIG: config/example.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          npm install -g aws-cdk@2
+
+      - name: Public-repo check (no account IDs, internal IDs, organisation names or secrets)
+        env:
+          GOV_BLOCKED_TERMS: ${{ secrets.GOV_BLOCKED_TERMS }}
+        run: python scripts/check_public.py
+
+      - name: Lint
+        run: ruff check infra engine scripts
+
+      - name: Engine unit tests
+        run: pytest -q engine/tests
+
+      - name: Build engine package
+        run: ./scripts/build_engine.sh
+
+      - name: CDK synth (example config)
+        working-directory: infra
+        run: cdk synth --quiet

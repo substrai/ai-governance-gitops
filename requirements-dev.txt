@@ -1,0 +1,4 @@
+-r infra/requirements.txt
+-r engine/requirements.txt
+pytest>=8
+ruff>=0.6

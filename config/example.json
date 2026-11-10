@@ -1,0 +1,38 @@
+{
+  "account": "111111111111",
+  "region": "us-east-1",
+  "registryId": "EXAMPLEREGISTRY0",
+  "guardrails": {
+    "guest-facing": {
+      "id": "exampleguest",
+      "version": "1"
+    },
+    "employee-data": {
+      "id": "exampleemployee",
+      "version": "1"
+    },
+    "finance": {
+      "id": "examplefinance",
+      "version": "1"
+    }
+  },
+  "policyEngine": "example_policy_engine-0000000000",
+  "gateway": "example-tools-0000000000",
+  "githubRepo": "substrai/ai-governance-gitops",
+  "guardrailDefaults": {
+    "customerFacing": "guest-facing",
+    "internal": "employee-data"
+  },
+  "naming": {
+    "displayName": "Example Co",
+    "projectTag": "example-ai-governance",
+    "bucketPrefix": "example-ai-gov",
+    "trailName": "example-ai-governance-trail",
+    "glueDatabase": "example_ai_governance",
+    "metricNamespace": "Example/AIGovernance",
+    "dashboardName": "Example-AI-Governance",
+    "intendedUsersDefault": "Team members",
+    "agentEndpointBase": "https://agents.example.com"
+  },
+  "blockedTerms": []
+}
