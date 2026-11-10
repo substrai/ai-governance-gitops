@@ -122,6 +122,14 @@ class NoUiGovernanceStack(Stack):
                                          "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListAgentRuntimes",
                                          "bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:DeleteAgentRuntime",
                                          "bedrock-agentcore:GetPolicyEngine"], resources=["*"]),
+            # Cutover (gov-maintenance disable-console-users): remove console passwords and MFA from the /gov/ users
+            # so CloudFormation can delete them. Removed again together with the users.
+            iam.PolicyStatement(sid="CutoverListUsers", actions=["iam:ListUsers"], resources=[f"arn:aws:iam::{acct}:user/*"]),
+            iam.PolicyStatement(sid="CutoverConsoleUsers", actions=["iam:GetLoginProfile", "iam:DeleteLoginProfile",
+                                                                    "iam:ListMFADevices", "iam:DeactivateMFADevice"],
+                                resources=[f"arn:aws:iam::{acct}:user/gov/*"]),
+            iam.PolicyStatement(sid="CutoverMfaDevices", actions=["iam:DeleteVirtualMFADevice"],
+                                resources=[f"arn:aws:iam::{acct}:mfa/*"]),
             iam.PolicyStatement(sid="A2ADemonstration", actions=["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"],
                                 resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:runtime/*",
                                            f"arn:aws:bedrock-agentcore:{region}:{acct}:gateway/*"]),

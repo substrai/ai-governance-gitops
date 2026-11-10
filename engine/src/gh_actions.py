@@ -436,6 +436,7 @@ ACTIONS = {
     "gh_change_apply": gh_change_apply, "gh_review_snapshot": gh_review_snapshot, "gh_review_decide": gh_review_decide,
     "gh_retire_plan": gh_retire_plan, "gh_retire_execute": gh_retire_execute, "gh_suspend_request": gh_suspend_request,
     "gh_suspend_apply": gh_suspend_apply, "gh_plan": gh_plan, "gh_a2a_demo": gh_a2a_demo,
+    "gh_maintenance": lambda e: __import__("maintenance").run(e),
 }
 
 
