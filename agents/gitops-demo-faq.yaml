@@ -5,7 +5,7 @@ department: Technology
 intendedUsers: Team members
 dataClassification: INTERNAL
 platform: AWS AgentCore
-version: 1.1.0
+version: 1.2.0
 risk:
   personalData: false
   customerFacing: false
@@ -20,5 +20,6 @@ build:
   guardrail: employee-data
 actingRole: developer
 change:
-  type: PROMPT
-  summary: Clearer answers about who approves each step
+  type: TOOL
+  summary: Let the agent read the menu so it can answer menu-governance questions
+  tools: [PosMenu___get_menu]
