@@ -1,11 +1,11 @@
 name: gitops-demo-faq
-status: release
+status: active
 purpose: Answers questions about how AI agents are governed through GitHub, for team members.
 department: Technology
 intendedUsers: Team members
 dataClassification: INTERNAL
 platform: AWS AgentCore
-version: 1.0.0
+version: 1.1.0
 risk:
   personalData: false
   customerFacing: false
@@ -19,3 +19,6 @@ roles:
 build:
   guardrail: employee-data
 actingRole: developer
+change:
+  type: PROMPT
+  summary: Clearer answers about who approves each step
