@@ -95,6 +95,78 @@ def _slug(role: str) -> str:
     return f"{REPO.split('/')[0]}-gov-{role}"
 
 
+def engine_token() -> str:
+    return bot_token("engine")[0]
+
+
+def role_of_bot(login: str) -> str | None:
+    """'substrai-gov-security[bot]' -> 'security'."""
+    m = re.fullmatch(r".+-gov-([a-z]+)\[bot\]", login or "")
+    return m.group(1) if m and m.group(1) in ROLES else None
+
+
+def agent_of_run(run: dict) -> str | None:
+    """Governance workflows name their runs '<stage> · <agent>'."""
+    m = re.search(r"·\s*([a-z0-9][a-z0-9-]{2,47})\s*$", run.get("display_title") or run.get("name") or "")
+    return m.group(1) if m else None
+
+
+def get_run(run_id: int) -> dict:
+    return _http("GET", f"/repos/{REPO}/actions/runs/{int(run_id)}", engine_token())
+
+
+def gate_approval(run_id: int, env: str) -> dict:
+    """The decision recorded at an environment gate of a run: {state, bot, role, comment}."""
+    for a in _http("GET", f"/repos/{REPO}/actions/runs/{int(run_id)}/approvals", engine_token()) or []:
+        if env in [x["name"] for x in a.get("environments", [])]:
+            bot = a["user"]["login"]
+            return {"state": a["state"], "bot": bot, "role": role_of_bot(bot), "comment": a.get("comment") or ""}
+    raise GateError(f"Run {run_id} has no decision recorded at `{env}`.")
+
+
+def pr_author(pr_number: int) -> tuple[str, dict]:
+    pr = _http("GET", f"/repos/{REPO}/pulls/{int(pr_number)}", engine_token())
+    return pr["user"]["login"], pr
+
+
+def require_operator(login: str) -> str:
+    if login.lower() not in OPERATORS:
+        raise GateError(f"@{login} is not an allowed governance operator.")
+    return login
+
+
+def open_issue(title: str, body: str, labels: list[str]) -> int:
+    issue = _http("POST", f"/repos/{REPO}/issues", engine_token(),
+                  {"title": title[:240], "body": body[:60000], "labels": labels, "assignees": sorted(OPERATORS)})
+    return issue["number"]
+
+
+def comment(issue_number: int, body: str) -> None:
+    _http("POST", f"/repos/{REPO}/issues/{int(issue_number)}/comments", engine_token(), {"body": body[:60000]})
+
+
+def dispatch_workflow(workflow_file: str, inputs: dict) -> None:
+    _http("POST", f"/repos/{REPO}/actions/workflows/{workflow_file}/dispatches", engine_token(),
+          {"ref": "main", "inputs": {k: str(v) for k, v in inputs.items()}})
+
+
+# Roles that must not decide a gate for an agent, from the roles recorded on the agent.
+def forbidden_roles(env: str, st: dict) -> dict[str, str]:
+    """{role: why} for the gate `env` and agent state `st` (empty when nothing applies)."""
+    roles = st.get("roles") or {}
+    pending = st.get("pendingChange") or {}
+    retirement = st.get("retirement") or {}
+    rules = {
+        "gov-intake": {"requestedBy": roles.get("requestedBy")},
+        "gov-release": {"owner": roles.get("owner"), "submittedBy": st.get("submittedByRole")},
+        "gov-change": {"change requester": pending.get("requestedByRole"), "owner": roles.get("owner")},
+        "gov-review": {"owner": roles.get("owner")},
+        "gov-retire": {"retirement requester": retirement.get("requestedByRole")},
+        "gov-suspend": {"suspension requester": st.get("suspensionRequestedByRole")},
+    }.get(env, {})
+    return {role: why for why, role in rules.items() if role}
+
+
 def waiting_runs(engine_token: str, issue_number: int, run_id: int | None) -> list[int]:
     if run_id:
         return [run_id]
@@ -132,10 +204,24 @@ def gate_command(event: dict) -> dict:
                 if owner_role != role:
                     skipped.append(f"`{env}` (run {rid}) belongs to the **{owner_role or 'unknown'}** role, not {role}")
                     continue
+                run = get_run(rid)
+                agent = agent_of_run(run)
+                if agent and decision == "approve":
+                    import engine  # late import: engine imports this module
+                    st = engine.get_state(agent) or {}
+                    conflict = forbidden_roles(env, st).get(role)
+                    if conflict:
+                        engine.log_event(agent, "SOD_VIOLATION_BLOCKED", f"{bot} for @{author}", gate=env, conflict=conflict, run=rid)
+                        engine.metric("SeparationOfDutiesViolations", 1)
+                        raise GateError(f"Separation of duties: the **{role}** role is the {conflict} of `{agent}` and cannot "
+                                        f"approve `{env}`. Ask a different role.")
                 text = f"{PAST[decision].capitalize()} by the {role} role bot on behalf of @{author}" + (f": {note}" if note else ".")
                 _http("POST", f"/repos/{REPO}/actions/runs/{rid}/deployment_protection_rule", token,
                       {"environment_name": env, "state": "approved" if decision == "approve" else "rejected", "comment": text[:1000]})
                 done.append(f"`{env}` (run {rid})")
+                if decision == "reject" and agent:
+                    import gh_actions
+                    gh_actions.on_gate_rejected(env, agent, bot, author, note)
         if not done:
             raise GateError("Nothing to decide for this role. " + "; ".join(skipped))
         msg = f"**{bot}** {PAST[decision]} {', '.join(done)}." + (f"\n\nNot touched: {'; '.join(skipped)}." if skipped else "")
