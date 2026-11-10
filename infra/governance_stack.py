@@ -122,6 +122,9 @@ class NoUiGovernanceStack(Stack):
                                          "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListAgentRuntimes",
                                          "bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:DeleteAgentRuntime",
                                          "bedrock-agentcore:GetPolicyEngine"], resources=["*"]),
+            iam.PolicyStatement(sid="A2ADemonstration", actions=["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"],
+                                resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:runtime/*",
+                                           f"arn:aws:bedrock-agentcore:{region}:{acct}:gateway/*"]),
             iam.PolicyStatement(sid="ManageAgentToolPolicies", actions=["bedrock-agentcore:CreatePolicy", "bedrock-agentcore:UpdatePolicy",
                                                                         "bedrock-agentcore:GetPolicy"],
                                 resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:policy-engine/{POLICY_ENGINE}",
@@ -147,7 +150,9 @@ class NoUiGovernanceStack(Stack):
                                                "GUARDRAIL_INTERNAL": gov.guardrail_defaults["internal"],
                                                "AGENT_ENDPOINT_BASE": n.agent_endpoint_base,
                                                "GITHUB_REPO": gov.github_repo, "GITHUB_APP_SECRET_PREFIX": "ai-gov/github-app/",
-                                               "GOV_OPERATORS": ",".join(gov.operators)})
+                                               "GOV_OPERATORS": ",".join(gov.operators),
+                                               "GUARDRAIL_ALIASES": json.dumps(gov.guardrail_aliases()),
+                                               "REDACT_TERMS": ",".join(gov.blocked_terms)})
 
         # ---------------------------------------------------------------- GitHub role bots
         # One secret per role bot (GitHub App). Values {"appId", "privateKey"} are uploaded once by an

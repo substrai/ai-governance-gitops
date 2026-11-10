@@ -1,0 +1,67 @@
+name: gov-suspend
+run-name: "${{ inputs.action }} · ${{ inputs.agent }}"
+
+# GOV-08 manual suspension or reinstatement. Suspending denies the agent's role all model, gateway and
+# runtime calls and moves its registry record to REJECTED; reinstating reverses both.
+# The engine opens an issue; the security role decides with `/approve security run=<id>`.
+# (Critical control failures suspend automatically inside the engine, without this workflow.)
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: Agent
+        required: true
+      action:
+        description: Suspend or reinstate
+        type: choice
+        options: [Suspend, Reinstate]
+      reason:
+        description: Why
+        required: true
+      acting_role:
+        description: Role you are acting as
+        type: choice
+        options: [security, platform, admin, developer, owner]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-suspend-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Record the request and open the decision issue
+        env:
+          REASON: ${{ inputs.reason }}
+        run: >
+          python scripts/gov_invoke.py gh_suspend_request --agent "${{ inputs.agent }}"
+          --set "suspendAction=${{ inputs.action }}" --set "actingRole=${{ inputs.acting_role }}" --set "reason=$REASON"
+
+  decide:
+    needs: request
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: gov-suspend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-suspend-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply
+        run: python scripts/gov_invoke.py gh_suspend_apply --agent "${{ inputs.agent }}"

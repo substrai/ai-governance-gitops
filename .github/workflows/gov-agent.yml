@@ -1,0 +1,106 @@
+name: gov-agent
+run-name: "gov · ${{ github.head_ref }}"
+
+# The agent lifecycle as pull requests. A PR from branch gov/<agent>/<step> changes agents/<agent>.yaml;
+# its `status` says what is asked for: requested (GOV-01/07), build (GOV-02), release (GOV-03),
+# active with a new version and `change` (GOV-04), retired (GOV-06).
+#   plan   the engine checks the request, records it, and posts the result on the PR
+#   gate   the job waits at that step's environment until the owning role bot decides
+#          (`/approve <role>` or `/reject <role> <reason>` on the PR)
+#   apply  the engine carries out the approved step
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths: ["agents/*.yaml"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: gov-agent-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: startsWith(github.head_ref, 'gov/') && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      agent: ${{ steps.which.outputs.agent }}
+      gate: ${{ steps.plan.outputs.gate }}
+      apply: ${{ steps.plan.outputs.apply }}
+      step: ${{ steps.plan.outputs.step }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Which agent
+        id: which
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          files=$(git diff --name-only "$BASE" HEAD -- 'agents/*.yaml')
+          count=$(echo "$files" | grep -c . || true)
+          [ "$count" = 1 ] || { echo "::error::Change exactly one agents/<name>.yaml per pull request (found $count)."; exit 1; }
+          agent=$(basename "$files" .yaml)
+          case "$HEAD_REF" in gov/"$agent"/*|gov/"$agent") ;; *) echo "::error::Branch must be gov/$agent/<step>."; exit 1;; esac
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+
+      - run: pip install --quiet pyyaml
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-plan-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Plan (engine posts the result on the PR)
+        id: plan
+        run: >
+          python scripts/gov_invoke.py gh_plan --manifest agents/${{ steps.which.outputs.agent }}.yaml
+          --pr ${{ github.event.pull_request.number }} --outputs step,gate,apply
+
+  gated:
+    needs: plan
+    if: needs.plan.outputs.gate != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ needs.plan.outputs.gate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-apply-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply ${{ needs.plan.outputs.step }}
+        run: >
+          python scripts/gov_invoke.py ${{ needs.plan.outputs.apply }} --manifest agents/${{ needs.plan.outputs.agent }}.yaml
+          --pr ${{ github.event.pull_request.number }}
+
+  pre-approved:
+    needs: plan
+    if: needs.plan.outputs.gate == '' && needs.plan.outputs.apply != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-apply-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply ${{ needs.plan.outputs.step }} (pre-approved by policy)
+        run: >
+          python scripts/gov_invoke.py ${{ needs.plan.outputs.apply }} --manifest agents/${{ needs.plan.outputs.agent }}.yaml
+          --pr ${{ github.event.pull_request.number }}

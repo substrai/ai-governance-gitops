@@ -1,0 +1,43 @@
+name: a2a-demo
+run-name: "a2a · ${{ inputs.caller }}"
+
+# Agent-to-agent (A2A) through the AgentCore agents gateway, with Cedar policies enforcing who may call whom:
+#   allowed  the caller agent asks the target agent through the gateway (a Cedar policy permits its role)
+#   denied   an identity no policy permits calls the target directly; the gateway refuses it
+on:
+  workflow_dispatch:
+    inputs:
+      caller:
+        description: Calling agent (ACTIVE, with an AgentCore runtime)
+        default: menu-allergen-assistant
+      target:
+        description: Target agent behind the agents gateway
+        default: vertex-promotions-agent
+      prompt:
+        description: Question for the caller
+        default: Which promotions are running in the app today? Please check with the promotions agent.
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  a2a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: a2a-demo-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Allowed call and denied call
+        env:
+          PROMPT: ${{ inputs.prompt }}
+        run: >
+          python scripts/gov_invoke.py gh_a2a_demo --set "caller=${{ inputs.caller }}" --set "target=${{ inputs.target }}"
+          --set "prompt=$PROMPT"
