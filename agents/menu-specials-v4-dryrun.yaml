@@ -1,11 +1,11 @@
 name: menu-specials-v4-dryrun
-status: release
+status: active
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
 dataClassification: INTERNAL
 platform: AWS AgentCore
-version: 1.0.0
+version: 1.1.0
 risk:
   personalData: false
   customerFacing: false
@@ -19,3 +19,6 @@ roles:
 build:
   guardrail: employee-data
 actingRole: developer
+change:
+  type: PROMPT
+  summary: Shorter, friendlier descriptions of each special
