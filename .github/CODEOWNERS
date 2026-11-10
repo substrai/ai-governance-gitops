@@ -1,0 +1,7 @@
+# Every change needs review by a code owner (enforced by the main-branch ruleset).
+# Persona teams replace the individual owner once the role model is in place.
+*                    @gauravSsinha
+/.github/            @gauravSsinha
+/infra/              @gauravSsinha
+/engine/             @gauravSsinha
+/agents/             @gauravSsinha

@@ -1,0 +1,28 @@
+# Account-specific configuration never goes into this public repository
+config/*.json
+!config/example.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+
+# Local data and build output
+*.db
+*.db-*
+cdk.out/
+cdk.context.json
+engine/build/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Demo media and recordings are produced locally, not committed
+demo/frames/
+demo/audio/
+demo/shots/
+*.mp4
+*.mp3
+.DS_Store
