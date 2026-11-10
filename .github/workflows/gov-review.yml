@@ -1,0 +1,51 @@
+name: gov-review
+run-name: "review · ${{ inputs.agent }}"
+
+# GOV-05 periodic review. Started by the engine's daily scheduler (or by hand).
+# The engine collects the evidence pack and opens an issue; the department-owner role signs off
+# with `/approve owner run=<id> outcome=PASS <notes>` on that issue.
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: Agent to review
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-review-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Collect evidence and open the review issue
+        run: python scripts/gov_invoke.py gh_review_snapshot --agent "${{ inputs.agent }}"
+
+  sign-off:
+    needs: evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: gov-review
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-review-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Record the review
+        run: python scripts/gov_invoke.py gh_review_decide --agent "${{ inputs.agent }}"

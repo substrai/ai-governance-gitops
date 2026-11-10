@@ -106,8 +106,13 @@ def role_of_bot(login: str) -> str | None:
 
 
 def agent_of_run(run: dict) -> str | None:
-    """Governance workflows name their runs '<stage> · <agent>'."""
-    m = re.search(r"·\s*([a-z0-9][a-z0-9-]{2,47})\s*$", run.get("display_title") or run.get("name") or "")
+    """Runs are named '<stage> · <agent>' (manual workflows) or 'gov · gov/<agent>/<step>' (pull requests)."""
+    title = run.get("display_title") or run.get("name") or ""
+    b = re.search(r"\bgov/([a-z0-9][a-z0-9-]{2,47})(?:/|$)", title) or re.search(r"\bgov/([a-z0-9][a-z0-9-]{2,47})(?:/|$)",
+                                                                                run.get("head_branch") or "")
+    if b:
+        return b.group(1)
+    m = re.search(r"·\s*([a-z0-9][a-z0-9-]{2,47})\s*$", title)
     return m.group(1) if m else None
 
 

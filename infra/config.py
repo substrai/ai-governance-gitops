@@ -55,6 +55,7 @@ class GovConfig:
     naming: Naming
     guardrail_defaults: dict[str, str]  # {"customerFacing": <profile>, "internal": <profile>}
     operators: tuple[str, ...] = ()     # GitHub logins allowed to issue /approve and /reject
+    blocked_terms: tuple[str, ...] = ()  # organisation words never shown in the public repository
     engine_asset: str = field(default=str(ROOT / "engine" / "build"))
     source_file: str = ""
 
@@ -72,9 +73,21 @@ class GovConfig:
                   github_repo=raw["githubRepo"],
                   github_oidc_subject_prefix=raw.get("githubOidcSubjectPrefix", f"repo:{raw['githubRepo']}"), naming=Naming.from_dict(raw["naming"]),
                   guardrail_defaults=raw["guardrailDefaults"], operators=tuple(raw.get("operators", [])),
+                  blocked_terms=tuple(raw.get("blockedTerms", [])),
                   engine_asset=str(ROOT / raw.get("engineAsset", "engine/build")), source_file=str(file))
         cfg.validate()
         return cfg
+
+    def guardrail_aliases(self) -> dict[str, str]:
+        """Neutral guardrail names usable in public agent files -> real profile names ("<term>-guest-facing" -> "guest-facing")."""
+        out = {}
+        for name in self.guardrails:
+            alias = name
+            for term in self.blocked_terms:
+                if alias.lower().startswith(term.lower() + "-"):
+                    alias = alias[len(term) + 1:]
+            out[alias] = name
+        return out
 
     def validate(self) -> None:
         if not re.fullmatch(r"\d{12}", self.account):

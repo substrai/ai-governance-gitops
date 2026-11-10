@@ -1,0 +1,29 @@
+# Copy to agents/<name>.yaml. Lowercase letters, digits and hyphens; 3-48 characters.
+name: example-agent
+status: requested            # requested | build | release | active | retired
+purpose: What the agent does and for whom (10+ characters).
+department: Guest Experience # Guest Experience | Restaurant Operations | Supply Chain | Finance | People | Marketing | Technology
+intendedUsers: Team members
+dataClassification: INTERNAL # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
+platform: AWS AgentCore      # or an external platform (GOV-07), e.g. Google Vertex AI
+version: 1.0.0
+risk:
+  personalData: false        # handles personal or guest data
+  customerFacing: false      # guests talk to it directly
+  takesActions: false        # acts in other systems (orders, refunds, schedules)
+  financialImpact: false     # affects payments, refunds or prices
+  externalTools: false       # uses third-party tools or other agents
+  autonomous: false          # acts without a person checking each action
+roles:
+  requestedBy: developer     # developer | owner | platform | security | admin
+  owner: developer
+build:
+  guardrail: employee-data   # guest-facing | employee-data | finance
+# actingRole: developer      # who you act as for release, change or retirement
+# change:                    # with status: active and a new version
+#   type: PROMPT             # PROMPT | MODEL | TOOL | PERMISSION | DATA_SOURCE
+#   summary: What changes and why
+#   tools: [Target___tool]   # TOOL changes: the complete list of tools the agent may call
+# retire:                    # with status: retired
+#   confirm: example-agent   # the agent's exact name
+#   reason: Why it is retired

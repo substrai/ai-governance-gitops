@@ -1129,7 +1129,7 @@ def handler(event, context):
             import gh_actions
             if action not in gh_actions.ACTIONS:
                 return {"error": f"Unknown action {action}"}
-            return gh_actions.ACTIONS[action](event)
+            return gh_actions.run(action, event)
         if action not in ACTIONS:
             return {"error": f"Unknown action {action}"}
         return ACTIONS[action](event)

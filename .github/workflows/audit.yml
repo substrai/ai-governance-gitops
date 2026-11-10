@@ -1,0 +1,52 @@
+name: audit
+run-name: "audit · ${{ inputs.query }}"
+
+# Read-only audit: runs one of the saved Athena queries over the evidence bucket and publishes the
+# result in the job summary. Waits at gov-audit until the auditor role bot approves
+# (`/approve auditor run=<id>` on any issue). Account and organisation identifiers are masked.
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: Saved query
+        type: choice
+        options:
+          - "1 Who approved what"
+          - "2 Agent lifecycle history"
+          - "3 Separation-of-duties violations"
+          - "4 Registry approvals in CloudTrail"
+          - "5 Shadow agents and suspensions"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: gov-audit
+    steps:
+      - name: Mask private values
+        env:
+          VALUES: ${{ secrets.GOV_PRIVATE_VALUES }}
+        run: |
+          while IFS= read -r v; do [ -n "$v" ] && echo "::add-mask::$v"; done <<< "$VALUES"
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-audit-ro
+          role-session-name: audit-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: pip install --quiet boto3
+
+      - name: Run the saved query (result in the job summary)
+        env:
+          QUERY_NAME: ${{ inputs.query }}
+          GOV_PRIVATE_VALUES: ${{ secrets.GOV_PRIVATE_VALUES }}
+        run: python scripts/audit_query.py "$QUERY_NAME" | tee -a "$GITHUB_STEP_SUMMARY"
