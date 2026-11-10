@@ -34,5 +34,6 @@
     "intendedUsersDefault": "Team members",
     "agentEndpointBase": "https://agents.example.com"
   },
-  "blockedTerms": []
+  "blockedTerms": [],
+  "githubOidcSubjectPrefix": "repo:substrai@0/ai-governance-gitops@0"
 }

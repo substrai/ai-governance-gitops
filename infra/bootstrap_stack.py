@@ -4,7 +4,9 @@ It lets GitHub Actions in exactly one repository reach this account with short-l
 credentials, and stores the private deployment config where CI can read it. After this stack
 exists, every other change goes through the repository's workflows.
 
-Roles and who can assume them (OIDC "sub" claim):
+Roles and who can assume them (OIDC "sub" claim). The repository uses GitHub's immutable
+subject format, repo:<owner>@<owner-id>/<repo>@<repo-id>:<context>, so a deleted and
+re-created repository with the same name cannot inherit this trust.
   gh-infra-plan    pull requests and main      read CloudFormation, run `cdk diff`, read config
   gh-infra-deploy  environment infra-prod      assume the CDK bootstrap roles to deploy
   gh-gov-engine    environments gov-*, main,   invoke the gov-engine Lambda only
@@ -28,7 +30,7 @@ CDK_QUALIFIER = "hnb659fds"
 class GitHubBootstrapStack(Stack):
     def __init__(self, scope: Construct, cid: str, *, gov: GovConfig, config_json: dict, **kw) -> None:
         super().__init__(scope, cid, **kw)
-        acct, region, repo = self.account, self.region, gov.github_repo
+        acct, region, sub_prefix = self.account, self.region, gov.github_oidc_subject_prefix
 
         provider = iam.OidcProviderNative(self, "GitHubOidc", url=f"https://{GITHUB_OIDC}",
                                           client_ids=["sts.amazonaws.com"])
@@ -36,7 +38,7 @@ class GitHubBootstrapStack(Stack):
         def github_role(rid: str, name: str, subjects: list[str], description: str) -> iam.Role:
             principal = iam.WebIdentityPrincipal(provider.oidc_provider_arn, conditions={
                 "StringEquals": {f"{GITHUB_OIDC}:aud": "sts.amazonaws.com"},
-                "StringLike": {f"{GITHUB_OIDC}:sub": [f"repo:{repo}:{s}" for s in subjects]},
+                "StringLike": {f"{GITHUB_OIDC}:sub": [f"{sub_prefix}:{s}" for s in subjects]},
             })
             return iam.Role(self, rid, role_name=name, assumed_by=principal, description=description,
                             max_session_duration=Duration.hours(1))
