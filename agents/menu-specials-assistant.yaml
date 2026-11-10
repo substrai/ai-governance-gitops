@@ -1,0 +1,20 @@
+name: menu-specials-assistant
+status: requested
+purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
+department: Restaurant Operations
+intendedUsers: Restaurant managers
+dataClassification: INTERNAL
+platform: AWS AgentCore
+version: 1.0.0
+risk:
+  personalData: false
+  customerFacing: false
+  takesActions: false
+  financialImpact: false
+  externalTools: false
+  autonomous: false
+roles:
+  requestedBy: security
+  owner: developer
+build:
+  guardrail: employee-data
