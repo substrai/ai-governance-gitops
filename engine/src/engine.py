@@ -1,13 +1,13 @@
 """AI governance engine (no custom UI).
 
-One Lambda that does the work behind the Systems Manager runbooks (GOV-01..08) and
-reacts to AWS events. People never call it directly: runbook steps invoke it with an
-``action``, and EventBridge invokes it with AWS events. State lives in DynamoDB
+One Lambda that does the work behind the GitHub governance workflows and reacts to AWS
+events. People never call it directly: workflow steps invoke it with an ``action``
+(see gh_actions.py), and EventBridge invokes it with AWS events and schedules. State lives in DynamoDB
 (``gov-lifecycle``); every decision is also written to the S3 evidence bucket
 (Object Lock) so Athena can answer audit questions.
 
 Errors meant for people are raised as ``GovError`` and returned as ``{"error": ...}``
-so the runbook step fails with a readable message.
+so the workflow step fails with a readable message.
 """
 from __future__ import annotations
 
@@ -29,7 +29,6 @@ ACCOUNT = os.environ["ACCOUNT_ID"]
 TABLE = os.environ["TABLE_NAME"]
 BUCKET = os.environ["EVIDENCE_BUCKET"]
 REGISTRY_ID = os.environ["REGISTRY_ID"]
-AUTOMATION_ROLE_ARN = os.environ["AUTOMATION_ROLE_ARN"]
 ALERT_TOPIC = os.environ["ALERT_TOPIC_ARN"]
 BOUNDARY_ARN = os.environ["BOUNDARY_ARN"]
 METRIC_NS = os.environ.get("METRIC_NAMESPACE", "AIGovernance")
@@ -41,12 +40,9 @@ DEFAULT_GATEWAY = os.environ.get("DEFAULT_GATEWAY", "")
 GUARDRAIL_CUSTOMER_FACING = os.environ.get("GUARDRAIL_CUSTOMER_FACING", "guest-facing")
 GUARDRAIL_INTERNAL = os.environ.get("GUARDRAIL_INTERNAL", "employee-data")
 AGENT_ENDPOINT_BASE = os.environ.get("AGENT_ENDPOINT_BASE", "https://agents.example.com").rstrip("/")
-GROUP_ROLE = {"Gov-Admin": "Admin", "Gov-Security": "Security", "Gov-Platform": "Platform",
-              "Gov-Developer": "Developer", "Gov-DepartmentOwner": "DepartmentOwner", "Gov-Auditor": "Auditor"}
 
 ddb = boto3.resource("dynamodb", region_name=REGION).Table(TABLE)
 s3 = boto3.client("s3", region_name=REGION)
-ssm = boto3.client("ssm", region_name=REGION)
 iam = boto3.client("iam")
 sns = boto3.client("sns", region_name=REGION)
 cw = boto3.client("cloudwatch", region_name=REGION)
@@ -85,14 +81,6 @@ def username(arn: str | None) -> str:
     if ":role/" in arn:
         return arn.rsplit("/", 1)[-1]
     return arn
-
-
-def roles_of(user: str) -> set:
-    try:
-        groups = iam.list_groups_for_user(UserName=user)["Groups"]
-    except ClientError:
-        return set()
-    return {GROUP_ROLE[g["GroupName"]] for g in groups if g["GroupName"] in GROUP_ROLE}
 
 
 def get_state(agent: str) -> dict | None:
@@ -161,49 +149,6 @@ def metric(name: str, value: float, **dims) -> None:
 
 # --------------------------------------------------------------------------- runbook context
 
-def execution(exec_id: str) -> dict:
-    return ssm.get_automation_execution(AutomationExecutionId=exec_id)["AutomationExecution"]
-
-
-def executor(exec_id: str) -> str:
-    return username(execution(exec_id).get("ExecutedBy"))
-
-
-def approval(exec_id: str, step: str) -> dict:
-    """Who decided an aws:approve step, the decision and the comment."""
-    ex = execution(exec_id)
-    for s in ex.get("StepExecutions", []):
-        if s.get("StepName") != step:
-            continue
-        outputs = s.get("Outputs") or {}
-        status = (outputs.get("ApprovalStatus") or [s.get("StepStatus")])[0]
-        approver, comment = None, ""
-        for raw in outputs.get("ApproverDecisions") or []:
-            try:
-                d = json.loads(raw) if isinstance(raw, str) else raw
-            except ValueError:
-                d = {"raw": raw}
-            if str(d.get("Decision", "")).lower() not in ("approve", "reject"):
-                continue  # approvers who have not decided are listed as "Waiting"
-            approver = d.get("Approver") or d.get("approver") or approver
-            comment = d.get("Comment") or d.get("comment") or comment
-            if isinstance(comment, list):
-                comment = " ".join(comment)
-        return {"status": status, "approver": username(approver), "comment": comment or "", "raw": outputs}
-    raise GovError(f"Approval step '{step}' not found in execution {exec_id}.")
-
-
-def separation_check(agent: str, decided_by: str, forbidden: dict, what: str) -> None:
-    """forbidden: {"requester": "gov-james", ...}. Raise and record when someone approves their own work."""
-    for role, user in forbidden.items():
-        if user and decided_by == user:
-            log_event(agent, "SOD_VIOLATION_BLOCKED", decided_by, what=what, conflict=role)
-            metric("SeparationOfDutiesViolations", 1)
-            alert(f"Separation of duties: {agent}",
-                  f"{decided_by} tried to {what} for '{agent}' but is also its {role}. The step was stopped.")
-            raise GovError(f"Separation of duties: {decided_by} is the {role} of '{agent}' and cannot {what}.")
-
-
 # --------------------------------------------------------------------------- GOV-01 intake
 
 def compute_risk(answers: dict, classification: str) -> tuple[str, list]:
@@ -235,62 +180,7 @@ def compute_risk(answers: dict, classification: str) -> tuple[str, list]:
     return "LOW", ["No elevated-risk factors"]
 
 
-def a_request(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,47}", agent):
-        raise GovError("AgentName must be 3-48 characters: lowercase letters, digits and hyphens.")
-    existing = get_state(agent)
-    if existing and existing.get("stage") not in ("REJECTED", "RETIRED"):
-        raise GovError(f"'{agent}' already exists and is {existing['stage']}.")
-    requester = executor(e["exec"])
-    answers = {k: truthy(e.get(k)) for k in ("personalData", "customerFacing", "takesActions",
-                                              "financialImpact", "externalTools", "autonomous")}
-    tier, reasons = compute_risk(answers, e["DataClassification"])
-    state = {
-        "agent": agent, "sk": "STATE", "stage": "REQUESTED", "riskTier": tier, "riskReasons": reasons,
-        "purpose": e["Purpose"], "department": e["Department"], "intendedUsers": e.get("IntendedUsers", ""),
-        "dataClassification": e["DataClassification"], "platform": e.get("Platform") or "AWS AgentCore",
-        "endpoint": e.get("Endpoint") or "", "riskAnswers": answers, "owner": requester, "requestedBy": requester,
-        "intakeExecution": e["exec"], "version": "1.0.0", "links": {}, "createdAt": iso(),
-    }
-    put_state(state)
-    key = put_evidence(f"evidence/agents/{agent}/intake-{e['exec']}.json", state)
-    log_event(agent, "REQUESTED", requester, riskTier=tier, riskReasons=reasons, evidence=key)
-    summary = f"{agent}: risk {tier} ({'; '.join(reasons)}). Requested by {requester} for {e['Department']}."
-    return {"agent": agent, "tier": tier, "requester": requester, "summary": summary}
-
-
-def a_decide_intake(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    d = approval(e["exec"], e.get("step", "ApproveIntake"))
-    if d["status"] != "Approved":
-        update_state(agent, stage="REJECTED", intakeDecidedBy=d["approver"])
-        log_event(agent, "INTAKE_REJECTED", d["approver"], comment=d["comment"])
-        raise GovError(f"Intake rejected by {d['approver']}: {d['comment'] or 'no reason given'}")
-    separation_check(agent, d["approver"], {"requester": st.get("requestedBy")}, "approve its intake")
-    tier = st["riskTier"]
-    m = re.search(r"tier\s*=\s*(LOW|MEDIUM|HIGH)", d["comment"], re.I)
-    if m and m.group(1).upper() != tier:
-        log_event(agent, "RISK_OVERRIDDEN", d["approver"], fromTier=tier, toTier=m.group(1).upper(), comment=d["comment"])
-        tier = m.group(1).upper()
-    update_state(agent, stage="BUILD_APPROVED", riskTier=tier, intakeApprovedBy=d["approver"])
-    log_event(agent, "INTAKE_APPROVED", d["approver"], riskTier=tier, comment=d["comment"])
-    return {"message": f"Approved by {d['approver']}; risk tier {tier}. Platform can now run GOV-02-BuildAgent."}
-
-
 # --------------------------------------------------------------------------- GOV-02 build
-
-def a_build(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    require_stage(st, "BUILD_APPROVED")
-    builder = executor(e["exec"])
-    roles = roles_of(builder)
-    if "Developer" in roles and not roles & {"Platform", "Admin"} and builder != st["owner"]:
-        raise GovError(f"{builder} is a developer and can only build agents they own (owner: {st['owner']}).")
-    return build_agent(agent, st, e, builder)
-
 
 def build_agent(agent: str, st: dict, e: dict, builder: str) -> dict:
     """Create or link everything the agent needs (shared by the console runbook and GitHub workflows)."""
@@ -474,13 +364,6 @@ def a_gates(e: dict) -> dict:
             "message": ("READY for release. " if ready else "NOT READY. ") + report}
 
 
-def a_submit(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    require_stage(st, "BUILD_APPROVED")
-    return submit_release(agent, st, executor(e["exec"]))
-
-
 def submit_release(agent: str, st: dict, who: str) -> dict:
     res = a_gates({"AgentName": agent})
     failed = [f"{c['label']} ({c['detail']})" for c in res["checks"] if c["required"] and not c["ok"]]
@@ -527,7 +410,7 @@ def on_registry_status(detail: dict) -> dict:
     who = username(principal)
     if not record_id or detail.get("errorCode"):
         return {"ignored": "no record or failed call"}
-    if AUTOMATION_ROLE_ARN.rsplit("/", 1)[-1] in principal or "gov-engine" in principal:
+    if "gov-engine" in principal:
         return {"ignored": "runbook-driven change"}
     st = find_by_record(record_id)
     if not st:
@@ -560,13 +443,6 @@ def on_registry_status(detail: dict) -> dict:
 REAPPROVAL = {"TOOL", "PERMISSION", "DATA_SOURCE"}
 
 
-def a_classify_change(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    require_stage(st, "ACTIVE")
-    return classify_change(agent, st, e["ChangeType"], e["Summary"], e["NewVersion"], executor(e["exec"]))
-
-
 def classify_change(agent: str, st: dict, ct: str, summary: str, version: str, who: str, **extra) -> dict:
     if ct not in ("PROMPT", "MODEL", "TOOL", "PERMISSION", "DATA_SOURCE"):
         raise GovError("Change type must be PROMPT, MODEL, TOOL, PERMISSION or DATA_SOURCE.")
@@ -578,22 +454,6 @@ def classify_change(agent: str, st: dict, ct: str, summary: str, version: str, w
     log_event(agent, "CHANGE_REQUESTED", who, changeType=ct, version=version, needsApproval=needs, summary=summary)
     return {"route": "Approval" if needs else "PreApproved",
             "message": f"{ct} change to {version} " + ("needs Security approval." if needs else "is pre-approved by policy.")}
-
-
-def a_apply_change(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    ch = st.get("pendingChange") or {}
-    decided_by = "policy (pre-approved)"
-    if ch.get("needsApproval"):
-        d = approval(e["exec"], "ApproveChange")
-        if d["status"] != "Approved":
-            update_state(agent, stage="ACTIVE", pendingChange=None)
-            log_event(agent, "CHANGE_REJECTED", d["approver"], comment=d["comment"], keptVersion=st["version"])
-            raise GovError(f"Change rejected by {d['approver']}; version {st['version']} stays live.")
-        separation_check(agent, d["approver"], {"change requester": ch.get("requestedBy"), "owner": st.get("owner")}, "approve this change")
-        decided_by = d["approver"]
-    return apply_change(agent, st, decided_by)
 
 
 def apply_change(agent: str, st: dict, decided_by: str) -> dict:
@@ -689,15 +549,6 @@ def metric_sum(ns: str, name: str, dims: dict, days: int = 90) -> float:
     return sum(p["Sum"] for p in r["Datapoints"])
 
 
-def a_review_snapshot(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    require_stage(st, "ACTIVE", "SUSPENDED")
-    pack = review_pack(agent, st)
-    update_state(agent, reviewExecution=e["exec"])
-    return {"summary": pack["summary"], "packUrl": console_s3_url(pack["key"])}
-
-
 def review_pack(agent: str, st: dict) -> dict:
     checks = release_checks(st)
     links = st.get("links") or {}
@@ -720,14 +571,6 @@ def review_pack(agent: str, st: dict) -> dict:
     return {"summary": summary, "key": key, "pack": pack}
 
 
-def a_review_decide(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    d = approval(e["exec"], "SignOff")
-    separation_check(agent, d["approver"], {"owner": st.get("owner")}, "sign off its review")
-    return record_review(agent, st, d["approver"], d["comment"], d["status"] == "Approved")
-
-
 def record_review(agent: str, st: dict, approver: str, comment: str, approved: bool) -> dict:
     d = {"approver": approver, "comment": comment or "", "status": "Approved" if approved else "Rejected"}
     m = re.search(r"outcome\s*=\s*(PASS|CHANGES_REQUIRED|RETIRE)", d["comment"], re.I)
@@ -748,22 +591,16 @@ def reviews_due() -> dict:
             continue
         if datetime.fromisoformat(st["nextReviewDue"].replace("Z", "+00:00")) > horizon:
             continue
-        open_ex = st.get("reviewExecution")
-        if open_ex:
+        open_run = st.get("reviewRun")
+        if open_run:
             try:
-                if execution(open_ex)["AutomationExecutionStatus"] in ("Pending", "InProgress", "Waiting"):
+                if github_gate.get_run(open_run).get("status") in ("queued", "in_progress", "waiting"):
                     continue
-            except ClientError:
+            except Exception:  # a review run that cannot be read is treated as finished
                 pass
-        try:
-            github_gate.dispatch_workflow("gov-review.yml", {"agent": st["agent"]})
-            started.append(st["agent"])
-            log_event(st["agent"], "REVIEW_STARTED", "scheduler", via="github:gov-review.yml", due=st["nextReviewDue"])
-        except Exception as ex:  # until the GitHub workflow exists, fall back to the console runbook
-            r = ssm.start_automation_execution(DocumentName="GOV-05-PeriodicReview", Parameters={"AgentName": [st["agent"]]})
-            started.append(st["agent"])
-            log_event(st["agent"], "REVIEW_STARTED", "scheduler", execution=r["AutomationExecutionId"], due=st["nextReviewDue"],
-                      githubError=str(ex)[:200])
+        github_gate.dispatch_workflow("gov-review.yml", {"agent": st["agent"]})
+        started.append(st["agent"])
+        log_event(st["agent"], "REVIEW_STARTED", "scheduler", via="github:gov-review.yml", due=st["nextReviewDue"])
     return {"started": started}
 
 
@@ -802,18 +639,6 @@ def retirement_plan(st: dict) -> list:
     return steps
 
 
-def a_retire_plan(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    require_stage(st, "ACTIVE", "SUSPENDED", "BUILD_APPROVED", "REJECTED", "RETIRING", "DETECTED")
-    if e.get("ConfirmName", "").strip().lower() != agent:
-        raise GovError("Type the agent's exact name in ConfirmName to retire it.")
-    who = executor(e["exec"])
-    if not roles_of(who) & {"Admin", "Platform"}:
-        raise GovError(f"{who} is not Admin or Platform and cannot retire agents.")
-    return plan_retirement(agent, st, who, e.get("Reason", ""))
-
-
 def plan_retirement(agent: str, st: dict, who: str, reason: str) -> dict:
     job = st.get("retirement") if st.get("stage") == "RETIRING" else None
     steps = job["steps"] if job else retirement_plan(st)
@@ -846,19 +671,6 @@ def _teardown(kind: str, rid: str, reason: str) -> str:
         ac.delete_agent_runtime(agentRuntimeId=rid)
         return "deleted"
     return "kept"
-
-
-def a_retire_execute(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    job = st.get("retirement") or {}
-    d = approval(e["exec"], "ApproveRetirement")
-    if d["status"] != "Approved":
-        update_state(agent, retirement=None)
-        log_event(agent, "RETIREMENT_REJECTED", d["approver"], comment=d["comment"])
-        raise GovError(f"Retirement rejected by {d['approver']}.")
-    separation_check(agent, d["approver"], {"retirement requester": job.get("requestedBy")}, "approve its retirement")
-    return execute_retirement(agent, st, d["approver"])
 
 
 def execute_retirement(agent: str, st: dict, approver: str) -> dict:
@@ -897,11 +709,6 @@ def execute_retirement(agent: str, st: dict, approver: str) -> dict:
 
 # --------------------------------------------------------------------------- GOV-07 external, GOV-08 suspend
 
-def a_register_external(e: dict) -> dict:
-    e = {**e, "Platform": e.get("Platform") or "External", "externalTools": "true"}
-    return a_request(e)
-
-
 def suspend_role(agent: str, st: dict, reason: str) -> list:
     roles = []
     role = ((st.get("links") or {}).get("iamRole") or {}).get("id")
@@ -912,29 +719,6 @@ def suspend_role(agent: str, st: dict, reason: str) -> list:
             "Resource": "*"}]}))
         roles.append(role)
     return roles
-
-
-def a_check_trigger(e: dict) -> dict:
-    """Automatic suspension skips human approval only when the engine itself started the runbook."""
-    who = executor(e["exec"])
-    automatic = e.get("Trigger") == "AutomaticCritical"
-    if automatic and "gov-engine" not in who:
-        raise GovError(f"Only the governance engine may start an automatic suspension; {who} must use Trigger=Manual.")
-    return {"route": "Automatic" if automatic else "Manual", "requester": who}
-
-
-def a_suspend(e: dict) -> dict:
-    agent = e["AgentName"].strip().lower()
-    st = require_state(agent)
-    decided_by = "automatic (critical control failure)"
-    if e.get("Trigger") != "AutomaticCritical":
-        d = approval(e["exec"], "ApproveSuspension")
-        if d["status"] != "Approved":
-            raise GovError(f"{e.get('Action', 'Suspend')} rejected by {d['approver']}.")
-        decided_by = d["approver"]
-    if e.get("Action") == "Reinstate":
-        return reinstate_agent(agent, st, decided_by, e.get("Reason", ""))
-    return suspend_agent(agent, st, decided_by, e.get("Reason", ""))
 
 
 def reinstate_agent(agent: str, st: dict, decided_by: str, reason: str) -> dict:
@@ -1018,9 +802,7 @@ def publish_metrics() -> dict:
         due = s.get("nextReviewDue")
         if s.get("stage") == "ACTIVE" and due and datetime.fromisoformat(due.replace("Z", "+00:00")) < now():
             overdue += 1
-    waiting = ssm.describe_automation_executions(Filters=[{"Key": "ExecutionStatus", "Values": ["Waiting"]}]).get(
-        "AutomationExecutionMetadataList", [])
-    waiting = [w for w in waiting if w.get("DocumentName", "").startswith("GOV-")]
+    waiting: list = []  # approvals now wait at GitHub environment gates; SUBMITTED agents are counted below
     pending_registry = 0
     for st in states:
         if st.get("stage") == "SUBMITTED":
@@ -1039,34 +821,6 @@ def publish_metrics() -> dict:
 
 
 # --------------------------------------------------------------------------- evidence export
-
-def export_execution(detail: dict) -> dict:
-    exec_id = detail.get("ExecutionId")
-    doc = detail.get("Definition", "")
-    if not exec_id or not doc.startswith("GOV-"):
-        return {"ignored": True}
-    ex = execution(exec_id)
-    approvals = []
-    for s in ex.get("StepExecutions", []):
-        if s.get("Action") == "aws:approve":
-            try:
-                a = approval(exec_id, s["StepName"])
-                approvals.append({"step": s["StepName"], "status": a["status"], "approver": a["approver"], "comment": a["comment"]})
-            except GovError:
-                pass
-    agent = ((ex.get("Parameters") or {}).get("AgentName") or ["-"])[0].strip().lower()
-    record = {"executionId": exec_id, "document": doc, "status": ex.get("AutomationExecutionStatus"),
-              "executedBy": username(ex.get("ExecutedBy")), "agent": agent, "start": ex.get("ExecutionStartTime"),
-              "end": ex.get("ExecutionEndTime"), "failure": ex.get("FailureMessage"), "approvals": approvals,
-              "steps": [{"name": s.get("StepName"), "status": s.get("StepStatus"), "failure": s.get("FailureMessage")}
-                        for s in ex.get("StepExecutions", [])]}
-    t = iso()
-    put_evidence(f"evidence/executions/{doc}/{exec_id}.json", record)
-    s3.put_object(Bucket=BUCKET, Key=f"evidence/runbooks/dt={t[:10]}/{exec_id}-{record['status']}.json",
-                  Body=json.dumps({**record, "approvals": json.dumps(approvals), "steps": json.dumps(record["steps"]),
-                                   "time": t}, default=str).encode())
-    return {"exported": exec_id}
-
 
 # --------------------------------------------------------------------------- AWS Config custom rules
 
@@ -1139,10 +893,6 @@ def on_config_change(detail: dict) -> dict:
 # --------------------------------------------------------------------------- entry point
 
 ACTIONS = {
-    "request": a_request, "decide_intake": a_decide_intake, "build": a_build, "gates": a_gates, "submit": a_submit,
-    "classify_change": a_classify_change, "apply_change": a_apply_change, "review_snapshot": a_review_snapshot,
-    "review_decide": a_review_decide, "retire_plan": a_retire_plan, "retire_execute": a_retire_execute,
-    "register_external": a_register_external, "check_trigger": a_check_trigger, "suspend": a_suspend,
     "reviews_due": lambda e: reviews_due(), "detect_shadow": lambda e: detect_shadow(),
     "publish_metrics": lambda e: publish_metrics(),
     "tick": lambda e: {**detect_shadow(), **publish_metrics()},
@@ -1155,8 +905,6 @@ def handler(event, context):
         if "configRuleName" in event and "resultToken" in event:
             return config_eval(event)
         dt = event.get("detail-type")
-        if dt == "EC2 Automation Execution Status-change Notification":
-            return export_execution(event["detail"])
         if dt == "AWS API Call via CloudTrail" and event["detail"].get("eventName") == "UpdateRegistryRecordStatus":
             return on_registry_status(event["detail"])
         if dt == "Config Rules Compliance Change":

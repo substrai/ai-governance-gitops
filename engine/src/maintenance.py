@@ -4,8 +4,6 @@ Every task runs twice: first as a dry run that lists exactly what would change (
 summary), then, after the admin role bot approves the gov-maintenance gate, for real. Tasks are
 idempotent: running one again changes only what is still left to change.
 
-  disable-console-users  remove the console passwords and MFA devices of the /gov/ IAM users, so the
-                         stack can delete those users (the moment console access ends)
   map-legacy-roles       record roles on agents created by the console personas, so separation of
                          duties applies to them on GitHub
   registry-cleanup       bring registry records in line with the lifecycle: withdraw the console-era
@@ -29,26 +27,6 @@ def _registry_records() -> list:
             return out
         kw["nextToken"] = r["nextToken"]
 
-
-def disable_console_users(apply: bool) -> list[str]:
-    changes = []
-    for page in E.iam.get_paginator("list_users").paginate(PathPrefix="/gov/"):
-        for u in page["Users"]:
-            name = u["UserName"]
-            try:
-                E.iam.get_login_profile(UserName=name)
-                changes.append(f"{name}: delete console password")
-                if apply:
-                    E.iam.delete_login_profile(UserName=name)
-            except E.ClientError as ex:
-                if ex.response["Error"]["Code"] != "NoSuchEntity":
-                    raise
-            for d in E.iam.list_mfa_devices(UserName=name)["MFADevices"]:
-                changes.append(f"{name}: remove MFA device")
-                if apply:
-                    E.iam.deactivate_mfa_device(UserName=name, SerialNumber=d["SerialNumber"])
-                    E.iam.delete_virtual_mfa_device(SerialNumber=d["SerialNumber"])
-    return changes
 
 
 def map_legacy_roles(apply: bool) -> list[str]:
@@ -93,7 +71,7 @@ def registry_cleanup(apply: bool) -> list[str]:
     return changes
 
 
-TASKS = {"disable-console-users": disable_console_users, "map-legacy-roles": map_legacy_roles,
+TASKS = {"map-legacy-roles": map_legacy_roles,
          "registry-cleanup": registry_cleanup}
 
 
