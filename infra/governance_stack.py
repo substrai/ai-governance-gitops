@@ -1,4 +1,4 @@
-"""AIGovernance-NoUI: AI governance with AWS consoles only (single-account MVP)."""
+"""AIGovernance-NoUI: AI governance with no custom UI, operated only through GitHub CI/CD (single account)."""
 from __future__ import annotations
 
 import json
@@ -6,28 +6,11 @@ import json
 from aws_cdk import (CfnOutput, Duration, RemovalPolicy, Stack, aws_athena as athena, aws_cloudtrail as cloudtrail,
                      aws_cloudwatch as cwatch, aws_cloudwatch_actions as cw_actions, aws_config as config,
                      aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as targets, aws_glue as glue,
-                     aws_iam as iam, aws_lambda as _lambda, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_sns as sns,
-                     aws_ssm as ssm)
+                     aws_iam as iam, aws_lambda as _lambda, aws_s3 as s3, aws_secretsmanager as secretsmanager, aws_sns as sns)
 from constructs import Construct
 
 from config import GovConfig
-from runbooks import documents
 
-PERSONAS = {  # IAM user -> (display name, group)
-    "gov-sarah": ("Sarah Chen", "Gov-Admin"), "gov-michael": ("Michael Torres", "Gov-Security"),
-    "gov-emily": ("Emily Johnson", "Gov-Platform"), "gov-james": ("James Wilson", "Gov-Developer"),
-    "gov-lisa": ("Lisa Martinez", "Gov-DepartmentOwner"), "gov-robert": ("Robert Kim", "Gov-Auditor"),
-}
-RUNBOOKS_BY_GROUP = {
-    "Gov-Admin": ["01", "02", "03", "04", "05", "06", "07", "08"],
-    "Gov-Security": ["05", "08"],
-    "Gov-Platform": ["02", "03", "06", "07", "08"],
-    "Gov-Developer": ["01", "02", "03", "04"],
-    "Gov-DepartmentOwner": ["01", "07"],
-    "Gov-Auditor": [],
-}
-APPROVER_GROUPS = {"Gov-Admin", "Gov-Security", "Gov-DepartmentOwner"}
-REGISTRY_APPROVER_GROUPS = {"Gov-Admin", "Gov-Security"}
 
 
 class NoUiGovernanceStack(Stack):
@@ -37,7 +20,6 @@ class NoUiGovernanceStack(Stack):
         REGISTRY_ID, GUARDRAILS = gov.registry_id, gov.guardrails
         POLICY_ENGINE, GATEWAY = gov.policy_engine, gov.gateway
         n = gov.naming
-        doc_names = list(documents(acct, "x", "x", "x", "x", gov).keys())
 
         # ---------------------------------------------------------------- evidence store
         evidence = s3.Bucket(self, "Evidence", bucket_name=f"{n.bucket_prefix}-evidence-{acct}",
@@ -63,8 +45,6 @@ class NoUiGovernanceStack(Stack):
                                    point_in_time_recovery_enabled=True),
                                removal_policy=RemovalPolicy.DESTROY)
 
-        approvals_topic = sns.Topic(self, "Approvals", topic_name="Automation-GovApprovals",
-                                    display_name="AI governance approvals")
         alerts_topic = sns.Topic(self, "Alerts", topic_name="gov-alerts", display_name="AI governance alerts")
 
         # ---------------------------------------------------------------- agent permission boundary
@@ -84,30 +64,15 @@ class NoUiGovernanceStack(Stack):
                                 resources=[table.table_arn]),
         ])
 
-        # ---------------------------------------------------------------- automation + engine roles
-        automation_role = iam.Role(self, "AutomationRole", role_name="GovAutomationRole",
-                                   assumed_by=iam.ServicePrincipal("ssm.amazonaws.com"),
-                                   description="Systems Manager runbooks GOV-01..08 run as this role")
-        automation_role.add_to_policy(iam.PolicyStatement(actions=["lambda:InvokeFunction"],
-                                                          resources=[f"arn:aws:lambda:{region}:{acct}:function:gov-engine"]))
-        approvals_topic.grant_publish(automation_role)
-        automation_role.add_to_policy(iam.PolicyStatement(actions=["iam:GetUser", "iam:GetRole", "iam:ListGroupsForUser"],
-                                                          resources=["*"]))
-
+        # ---------------------------------------------------------------- engine role
         engine_role = iam.Role(self, "EngineRole", role_name="gov-engine-role",
                                assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
                                managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")])
         table.grant_read_write_data(engine_role)
         evidence.grant_read_write(engine_role)
         alerts_topic.grant_publish(engine_role)
-        automation_role.grant_pass_role(engine_role)
-        doc_arns = [f"arn:aws:ssm:{region}:{acct}:document/GOV-*", f"arn:aws:ssm:{region}:{acct}:automation-definition/GOV-*:*"]
         for stmt in [
-            iam.PolicyStatement(actions=["ssm:GetAutomationExecution", "ssm:DescribeAutomationExecutions",
-                                         "ssm:DescribeAutomationStepExecutions"], resources=["*"]),
-            iam.PolicyStatement(actions=["ssm:StartAutomationExecution"],
-                                resources=doc_arns + [f"arn:aws:ssm:{region}:{acct}:automation-execution/*"]),
-            iam.PolicyStatement(actions=["iam:ListGroupsForUser", "iam:GetRole", "iam:ListRoles", "iam:ListRolePolicies",
+            iam.PolicyStatement(actions=["iam:GetRole", "iam:ListRoles", "iam:ListRolePolicies",
                                          "iam:ListAttachedRolePolicies", "iam:GetRolePolicy"], resources=["*"]),
             iam.PolicyStatement(actions=["iam:CreateRole"], resources=[f"arn:aws:iam::{acct}:role/*-agent-role"],
                                 conditions={"StringEquals": {"iam:PermissionsBoundary": f"arn:aws:iam::{acct}:policy/GovAgentBoundary"}}),
@@ -122,14 +87,6 @@ class NoUiGovernanceStack(Stack):
                                          "bedrock-agentcore:GetGateway", "bedrock-agentcore:ListAgentRuntimes",
                                          "bedrock-agentcore:GetAgentRuntime", "bedrock-agentcore:DeleteAgentRuntime",
                                          "bedrock-agentcore:GetPolicyEngine"], resources=["*"]),
-            # Cutover (gov-maintenance disable-console-users): remove console passwords and MFA from the /gov/ users
-            # so CloudFormation can delete them. Removed again together with the users.
-            iam.PolicyStatement(sid="CutoverListUsers", actions=["iam:ListUsers"], resources=[f"arn:aws:iam::{acct}:user/*"]),
-            iam.PolicyStatement(sid="CutoverConsoleUsers", actions=["iam:GetLoginProfile", "iam:DeleteLoginProfile",
-                                                                    "iam:ListMFADevices", "iam:DeactivateMFADevice"],
-                                resources=[f"arn:aws:iam::{acct}:user/gov/*"]),
-            iam.PolicyStatement(sid="CutoverMfaDevices", actions=["iam:DeleteVirtualMFADevice"],
-                                resources=[f"arn:aws:iam::{acct}:mfa/*"]),
             iam.PolicyStatement(sid="A2ADemonstration", actions=["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"],
                                 resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:runtime/*",
                                            f"arn:aws:bedrock-agentcore:{region}:{acct}:gateway/*"]),
@@ -150,10 +107,9 @@ class NoUiGovernanceStack(Stack):
         engine = _lambda.Function(self, "Engine", function_name="gov-engine", runtime=_lambda.Runtime.PYTHON_3_13,
                                   handler="engine.handler", code=_lambda.Code.from_asset(gov.engine_asset), role=engine_role,
                                   timeout=Duration.minutes(15), memory_size=512,
-                                  description="AI governance engine behind the GOV runbooks (no custom UI)",
+                                  description="AI governance engine behind the GitHub governance workflows (no custom UI)",
                                   environment={"ACCOUNT_ID": acct, "TABLE_NAME": table.table_name,
                                                "EVIDENCE_BUCKET": evidence.bucket_name, "REGISTRY_ID": REGISTRY_ID,
-                                               "AUTOMATION_ROLE_ARN": automation_role.role_arn,
                                                "ALERT_TOPIC_ARN": alerts_topic.topic_arn, "BOUNDARY_ARN": boundary.managed_policy_arn,
                                                "GUARDRAILS_JSON": json.dumps(GUARDRAILS),
                                                "DEFAULT_POLICY_ENGINE": POLICY_ENGINE, "DEFAULT_GATEWAY": GATEWAY,
@@ -175,19 +131,7 @@ class NoUiGovernanceStack(Stack):
                                            removal_policy=RemovalPolicy.RETAIN)
             secret.grant_read(engine_role)
 
-        # ---------------------------------------------------------------- runbooks
-        for name, content in documents(acct, automation_role.role_arn, approvals_topic.topic_arn, POLICY_ENGINE, GATEWAY, gov).items():
-            ssm.CfnDocument(self, name.replace("-", ""), name=name, document_type="Automation", document_format="YAML",
-                            update_method="NewVersion", content=__import__("yaml").safe_load(content),
-                            tags=[{"key": "gov:component", "value": "runbook"}])
-
         # ---------------------------------------------------------------- events
-        events.Rule(self, "RunbookFinished", rule_name="gov-runbook-finished",
-                    description="Export every GOV runbook execution and its approvals to the evidence bucket",
-                    event_pattern=events.EventPattern(source=["aws.ssm"], detail_type=["EC2 Automation Execution Status-change Notification"],
-                                                      detail={"Definition": [{"prefix": "GOV-"}],
-                                                              "Status": ["Success", "Failed", "TimedOut", "Cancelled"]}),
-                    targets=[targets.LambdaFunction(engine)])
         events.Rule(self, "RegistryStatusChanged", rule_name="gov-registry-status-changed",
                     description="Separation-of-duties check on every Agent Registry approval",
                     event_pattern=events.EventPattern(source=["aws.agent-registry"], detail_type=["AWS API Call via CloudTrail"],
@@ -204,7 +148,7 @@ class NoUiGovernanceStack(Stack):
         events.Rule(self, "Tick", rule_name="gov-tick-5min", description="Shadow-agent detection and governance metrics",
                     schedule=events.Schedule.rate(Duration.minutes(5)),
                     targets=[targets.LambdaFunction(engine, event=events.RuleTargetInput.from_object({"action": "tick"}))])
-        events.Rule(self, "ReviewsDue", rule_name="gov-reviews-due-daily", description="Start GOV-05 for agents due a review",
+        events.Rule(self, "ReviewsDue", rule_name="gov-reviews-due-daily", description="Start the gov-review workflow for agents due a review",
                     schedule=events.Schedule.cron(minute="0", hour="13"),
                     targets=[targets.LambdaFunction(engine, event=events.RuleTargetInput.from_object({"action": "reviews_due"}))])
 
@@ -311,8 +255,10 @@ class NoUiGovernanceStack(Stack):
             q = athena.CfnNamedQuery(self, f"Query{i}", name=qname, database=db, query_string=sql, work_group=wg.name)
             q.add_dependency(wg)
 
-        # ---------------------------------------------------------------- people: IAM groups and demo users
-        deny_direct = iam.ManagedPolicy(self, "DenyDirect", managed_policy_name="GovDenyDirectChanges",
+        # ---------------------------------------------------------------- guardrail for human and DevOps roles
+        # Attach to any human or DevOps role: agent resources change only through the GitHub workflows.
+        # (The description is kept as deployed: a managed policy's description cannot change without replacement.)
+        iam.ManagedPolicy(self, "DenyDirect", managed_policy_name="GovDenyDirectChanges",
                                         description="Agent resources change only through GOV runbooks", statements=[
             iam.PolicyStatement(sid="RunbooksOnly", effect=iam.Effect.DENY, resources=["*"], actions=[
                 "agent-registry:CreateRegistry*", "agent-registry:UpdateRegistry", "agent-registry:DeleteRegistry*",
@@ -325,55 +271,7 @@ class NoUiGovernanceStack(Stack):
                 "config:DeleteConfigRule", "s3:BypassGovernanceRetention"]),
             iam.PolicyStatement(sid="GovernanceRecordsReadOnly", effect=iam.Effect.DENY, resources=[table.table_arn],
                                 actions=["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]),
-            iam.PolicyStatement(sid="OnlyGovRunbooks", effect=iam.Effect.DENY, actions=["ssm:StartAutomationExecution"],
-                                not_resources=doc_arns + [f"arn:aws:ssm:{region}:{acct}:automation-execution/*"]),
         ])
-        mfa = iam.ManagedPolicy(self, "RequireMfa", managed_policy_name="GovRequireMfa", statements=[
-            iam.PolicyStatement(sid="ManageOwnMfaAndPassword", resources=[f"arn:aws:iam::{acct}:user/gov/${{aws:username}}",
-                                                                          f"arn:aws:iam::{acct}:mfa/${{aws:username}}"],
-                                actions=["iam:ChangePassword", "iam:GetUser", "iam:ListMFADevices", "iam:ResyncMFADevice",
-                                         "iam:CreateVirtualMFADevice", "iam:EnableMFADevice"]),
-            iam.PolicyStatement(sid="DenyWithoutMfa", effect=iam.Effect.DENY, resources=["*"],
-                                not_actions=["iam:ChangePassword", "iam:GetUser", "iam:ListMFADevices", "iam:ListVirtualMFADevices",
-                                             "iam:ResyncMFADevice", "iam:CreateVirtualMFADevice", "iam:EnableMFADevice",
-                                             "sts:GetSessionToken", "iam:GetAccountPasswordPolicy"],
-                                conditions={"BoolIfExists": {"aws:MultiFactorAuthPresent": "false"}}),
-        ])
-        console_read = iam.ManagedPolicy(self, "ConsoleRead", managed_policy_name="GovConsoleRead", statements=[
-            iam.PolicyStatement(actions=["agent-registry:Get*", "agent-registry:List*", "agent-registry:Search*",
-                                         "bedrock-agentcore:Get*", "bedrock-agentcore:List*", "bedrock:Get*", "bedrock:List*",
-                                         "cloudwatchomni:Get*", "cloudwatchomni:List*"], resources=["*"])])
-        groups = {}
-        for gname, nums in RUNBOOKS_BY_GROUP.items():
-            g = iam.Group(self, gname.replace("-", ""), group_name=gname, path="/gov/", managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("ReadOnlyAccess"), deny_direct, mfa, console_read])
-            names = [n for n in doc_names if n[4:6] in nums]
-            if names:
-                g.add_to_policy(iam.PolicyStatement(sid="RunMyRunbooks", actions=["ssm:StartAutomationExecution"], resources=
-                    [f"arn:aws:ssm:{region}:{acct}:document/{n}" for n in names]
-                    + [f"arn:aws:ssm:{region}:{acct}:automation-definition/{n}:*" for n in names]
-                    + [f"arn:aws:ssm:{region}:{acct}:automation-execution/*"]))
-                g.add_to_policy(iam.PolicyStatement(sid="PassRunbookRole", actions=["iam:PassRole"], resources=[automation_role.role_arn]))
-                g.add_to_policy(iam.PolicyStatement(sid="StopOwnRuns", actions=["ssm:StopAutomationExecution"],
-                                                    resources=[f"arn:aws:ssm:{region}:{acct}:automation-execution/*"]))
-            if gname in APPROVER_GROUPS:
-                g.add_to_policy(iam.PolicyStatement(sid="ApproveRunbookSteps", actions=["ssm:SendAutomationSignal"],
-                                                    resources=[f"arn:aws:ssm:{region}:{acct}:automation-execution/*"]))
-            if gname in REGISTRY_APPROVER_GROUPS:
-                g.add_to_policy(iam.PolicyStatement(sid="ApproveReleasesInRegistry", actions=["agent-registry:UpdateRegistryRecordStatus"],
-                                                    resources=[f"arn:aws:agent-registry:{region}:{acct}:registry/{REGISTRY_ID}/*"]))
-            if gname in ("Gov-Auditor", "Gov-Admin", "Gov-Security"):
-                g.add_to_policy(iam.PolicyStatement(sid="RunAuditQueries", actions=[
-                    "athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution",
-                    "athena:GetWorkGroup", "athena:ListNamedQueries", "athena:GetNamedQuery", "athena:BatchGetNamedQuery",
-                    "athena:ListQueryExecutions", "athena:BatchGetQueryExecution"],
-                    resources=[f"arn:aws:athena:{region}:{acct}:workgroup/ai-governance"]))
-                g.add_to_policy(iam.PolicyStatement(sid="QueryResults", actions=["s3:PutObject", "s3:GetObject", "s3:ListBucket",
-                                                                                 "s3:GetBucketLocation", "s3:AbortMultipartUpload"],
-                                                    resources=[results.bucket_arn, results.arn_for_objects("*")]))
-            groups[gname] = g
-        for user, (_display, gname) in PERSONAS.items():
-            iam.User(self, user.replace("-", ""), user_name=user, path="/gov/", groups=[groups[gname]])
 
         # ---------------------------------------------------------------- dashboard and alarms
         def gm(name: str, stat: str = "Maximum", **dims) -> cwatch.Metric:
@@ -383,10 +281,10 @@ class NoUiGovernanceStack(Stack):
         dash = cwatch.Dashboard(self, "Dashboard", dashboard_name=n.dashboard_name,
                                 default_interval=Duration.days(7))
         dash.add_widgets(cwatch.TextWidget(markdown=(
-            f"# {n.display_name} AI governance\nEvery agent is **known** (Agent Registry), **approved** (GOV runbooks), "
+            f"# {n.display_name} AI governance\nEvery agent is **known** (Agent Registry), **approved** (GitHub role bots), "
             "**controlled** (Guardrails, Cedar, IAM) and **watched** (traces, evaluations, AWS Config). "
-            "Start a request: Systems Manager > Automation > Execute automation > *Owned by me* > GOV-01-RequestAgent. "
-            "Audit: Athena workgroup *ai-governance* > Saved queries."), width=24, height=3))
+            "Requests, approvals and audits run through the GitHub repository: pull requests on agents/<name>.yaml, "
+            "/approve <role> comments, and the audit workflow."), width=24, height=3))
         dash.add_widgets(
             cwatch.SingleValueWidget(title="Agents by lifecycle stage", width=12, height=4, metrics=[
                 gm("AgentsByStage", Stage=s).with_(label=s) for s in ("ACTIVE", "SUBMITTED", "BUILD_APPROVED", "REQUESTED", "SUSPENDED", "RETIRED")]),

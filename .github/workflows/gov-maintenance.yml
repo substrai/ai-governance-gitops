@@ -9,7 +9,7 @@ on:
       task:
         description: Task
         type: choice
-        options: [disable-console-users, map-legacy-roles, registry-cleanup]
+        options: [map-legacy-roles, registry-cleanup]
 
 permissions:
   id-token: write
