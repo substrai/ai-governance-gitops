@@ -201,25 +201,33 @@ def gh_change_apply(e: dict) -> dict:
 
 # ----------------------------------------------------------------------------- GOV-05 review
 
+def review_gate(st: dict) -> str:
+    """Reviews are signed off by the department-owner role, unless that role owns the agent: then by security."""
+    return "gov-review-security" if (st.get("roles") or {}).get("owner") == "owner" else "gov-review"
+
+
 def gh_review_snapshot(e: dict) -> dict:
     agent = _agent(e)
     st = E.require_state(agent)
     E.require_stage(st, "ACTIVE", "SUSPENDED")
     pack = E.review_pack(agent, st)
     run_id = int(e.get("run_id") or 0)
+    gate = review_gate(st)
+    role = G.GATE_ROLE[gate]
     E.update_state(agent, reviewRun=run_id)
+    who = "the department-owner role" if role == "owner" else "the security role (the department-owner role owns this agent)"
     issue = G.open_issue(f"Periodic review: {agent}",
                          f"{pack['summary']}\n\nEvidence pack stored in the evidence bucket.\n\n"
-                         f"To sign off, the department-owner role comments here:\n"
-                         f"`/approve owner run={run_id} outcome=PASS <notes>` (or `outcome=CHANGES_REQUIRED` / `outcome=RETIRE`),\n"
-                         f"or `/reject owner run={run_id} <reason>`.", ["gov-review"])
-    return {"summary": pack["summary"], "issue": issue}
+                         f"To sign off, {who} comments here:\n"
+                         f"`/approve {role} run={run_id} outcome=PASS <notes>` (or `outcome=CHANGES_REQUIRED` / `outcome=RETIRE`),\n"
+                         f"or `/reject {role} run={run_id} <reason>`.", ["gov-review"])
+    return {"summary": pack["summary"], "issue": issue, "gate": gate}
 
 
 def gh_review_decide(e: dict) -> dict:
     agent = _agent(e)
     st = E.require_state(agent)
-    d = _approved(e, "gov-review", agent)
+    d = _approved(e, review_gate(st), agent)
     return E.record_review(agent, st, d["bot"], d["comment"], True)
 
 
@@ -418,7 +426,7 @@ def on_gate_rejected(env: str, agent: str, bot: str, author: str, reason: str) -
     elif env == "gov-change" and st.get("stage") == "CHANGE_PENDING":
         E.update_state(agent, stage="ACTIVE", pendingChange=None)
         E.log_event(agent, "CHANGE_REJECTED", who, comment=reason, keptVersion=st.get("version"))
-    elif env == "gov-review":
+    elif env in ("gov-review", "gov-review-security"):
         E.record_review(agent, st, bot, f"outcome=CHANGES_REQUIRED {reason}", False)
     elif env == "gov-retire":
         E.update_state(agent, retirement=None)

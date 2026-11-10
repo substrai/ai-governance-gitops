@@ -76,6 +76,9 @@ TASKS = {"map-legacy-roles": map_legacy_roles,
 
 
 def run(event: dict) -> dict:
+    """Dry run: open an issue listing every change and naming the waiting run. Apply: report on that issue."""
+    import github_gate as G
+    from gh_actions import redact
     task = event.get("task")
     if task not in TASKS:
         raise E.GovError(f"Unknown task '{task}'. Tasks: {', '.join(TASKS)}.")
@@ -83,4 +86,14 @@ def run(event: dict) -> dict:
     changes = TASKS[task](apply)
     verb = "Changed" if apply else "Would change"
     body = "\n".join(f"- {c}" for c in changes) or "- nothing (already done)"
-    return {"message": f"{task}: {verb} {len(changes)} item(s).\n\n{body}", "changes": changes, "applied": apply}
+    message = redact(f"{task}: {verb} {len(changes)} item(s).\n\n{body}")
+    run_id = event.get("run_id")
+    if not apply:
+        issue = G.open_issue(f"Maintenance: {task}",
+                             f"**Dry run** (run {run_id})\n\n{message}\n\nTo apply exactly this, the admin role comments here: "
+                             f"`/approve admin run={run_id} <note>`, or `/reject admin run={run_id} <reason>`.", ["gov-maintenance"])
+    else:
+        issue = int(event.get("issue") or 0)
+        if issue:
+            G.comment(issue, f"**Applied** (run {run_id})\n\n{message}")
+    return {"message": message, "changes": changes, "applied": apply, "issue": issue}

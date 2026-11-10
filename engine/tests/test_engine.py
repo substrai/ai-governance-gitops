@@ -97,3 +97,15 @@ def test_separation_of_duties(env, state, role, blocked):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     import github_gate as G
     assert (role in G.forbidden_roles(env, state)) is blocked
+
+
+def test_review_routing():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    import os
+    for k, v in ENV.items():
+        os.environ.setdefault(k, v)
+    import gh_actions
+    import github_gate as G
+    assert gh_actions.review_gate({"roles": {"owner": "owner"}}) == "gov-review-security"
+    assert gh_actions.review_gate({"roles": {"owner": "developer"}}) == "gov-review"
+    assert "security" not in G.forbidden_roles("gov-review-security", {"roles": {"owner": "owner"}})
