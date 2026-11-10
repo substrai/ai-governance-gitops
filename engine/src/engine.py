@@ -723,17 +723,16 @@ def suspend_role(agent: str, st: dict, reason: str) -> list:
 
 def reinstate_agent(agent: str, st: dict, decided_by: str, reason: str) -> dict:
     require_stage(st, "SUSPENDED")
-    if True:  # keeps the original block's indentation; removed when the console runbooks are retired
-        role = ((st.get("links") or {}).get("iamRole") or {}).get("id")
-        if role:
-            try:
-                iam.delete_role_policy(RoleName=role, PolicyName="gov-suspended")
-            except ClientError:
-                pass
-        registry = registry_set_status(st, "APPROVED", f"Reinstated by {decided_by}: {reason}")
-        update_state(agent, stage="ACTIVE", suspendedReason=None)
-        log_event(agent, "REINSTATED", decided_by, reason=reason, registry=registry)
-        return {"message": f"{agent} reinstated by {decided_by}." + (f" Registry record {registry}." if registry else "")}
+    role = ((st.get("links") or {}).get("iamRole") or {}).get("id")
+    if role:
+        try:
+            iam.delete_role_policy(RoleName=role, PolicyName="gov-suspended")
+        except ClientError:
+            pass
+    registry = registry_set_status(st, "APPROVED", f"Reinstated by {decided_by}: {reason}")
+    update_state(agent, stage="ACTIVE", suspendedReason=None)
+    log_event(agent, "REINSTATED", decided_by, reason=reason, registry=registry)
+    return {"message": f"{agent} reinstated by {decided_by}." + (f" Registry record {registry}." if registry else "")}
 
 
 def suspend_agent(agent: str, st: dict, decided_by: str, reason: str) -> dict:
