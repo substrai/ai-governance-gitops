@@ -51,6 +51,7 @@ class GovConfig:
     policy_engine: str
     gateway: str
     github_repo: str
+    github_oidc_subject_prefix: str  # GitHub's "sub" claim prefix, e.g. repo:owner@<id>/name@<id> (immutable subjects)
     naming: Naming
     guardrail_defaults: dict[str, str]  # {"customerFacing": <profile>, "internal": <profile>}
     engine_asset: str = field(default=str(ROOT / "engine" / "build"))
@@ -67,7 +68,8 @@ class GovConfig:
         raw = json.loads(file.read_text())
         cfg = cls(account=str(raw["account"]), region=raw["region"], registry_id=raw["registryId"],
                   guardrails=raw["guardrails"], policy_engine=raw["policyEngine"], gateway=raw["gateway"],
-                  github_repo=raw["githubRepo"], naming=Naming.from_dict(raw["naming"]),
+                  github_repo=raw["githubRepo"],
+                  github_oidc_subject_prefix=raw.get("githubOidcSubjectPrefix", f"repo:{raw['githubRepo']}"), naming=Naming.from_dict(raw["naming"]),
                   guardrail_defaults=raw["guardrailDefaults"],
                   engine_asset=str(ROOT / raw.get("engineAsset", "engine/build")), source_file=str(file))
         cfg.validate()
@@ -80,6 +82,8 @@ class GovConfig:
             raise SystemExit("config: region looks wrong")
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", self.github_repo):
             raise SystemExit("config: githubRepo must be owner/name")
+        if not self.github_oidc_subject_prefix.startswith("repo:"):
+            raise SystemExit("config: githubOidcSubjectPrefix must start with repo:")
         for key in ("customerFacing", "internal"):
             if self.guardrail_defaults.get(key) not in self.guardrails:
                 raise SystemExit(f"config: guardrailDefaults.{key} must name one of the guardrails")
