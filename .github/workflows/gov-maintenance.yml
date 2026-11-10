@@ -1,0 +1,54 @@
+name: gov-maintenance
+run-name: "maintenance · ${{ inputs.task }}"
+
+# One-off cutover tasks. The dry run lists exactly what would change (job summary); the apply job
+# waits at gov-maintenance until the admin role bot approves (`/approve admin run=<id>` on any issue).
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task
+        type: choice
+        options: [disable-console-users, map-legacy-roles, registry-cleanup]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  GOV_PRIVATE_VALUES: ${{ secrets.GOV_PRIVATE_VALUES }}
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: maintenance-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: What would change
+        run: python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=dry-run
+
+  apply:
+    needs: dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: gov-maintenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: maintenance-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply
+        run: python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=apply

@@ -34,7 +34,7 @@ API = "https://api.github.com"
 GATE_ROLE = {
     "gov-intake": "security", "gov-release": "security", "gov-change": "security", "gov-suspend": "security",
     "gov-build": "platform", "gov-review": "owner", "gov-retire": "admin", "infra-prod": "admin",
-    "gov-audit": "auditor",
+    "gov-audit": "auditor", "gov-maintenance": "admin",
 }
 ROLES = {"security", "platform", "admin", "owner", "auditor"}
 PAST = {"approve": "approved", "reject": "rejected"}
