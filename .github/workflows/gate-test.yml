@@ -1,0 +1,22 @@
+name: gate-test
+
+# Waits at a chosen governance gate, so a role bot's /approve or /reject can be tested.
+# No AWS access.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Gate to wait at
+        type: choice
+        options: [gov-intake, gov-build, gov-release, gov-change, gov-review, gov-retire, gov-suspend, gov-audit]
+
+permissions:
+  contents: read
+
+jobs:
+  gated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    steps:
+      - run: echo "Passed the ${{ inputs.environment }} gate at $(date -u +%FT%TZ)"

@@ -22,6 +22,8 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
+import github_gate
+
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 ACCOUNT = os.environ["ACCOUNT_ID"]
 TABLE = os.environ["TABLE_NAME"]
@@ -993,6 +995,7 @@ ACTIONS = {
     "reviews_due": lambda e: reviews_due(), "detect_shadow": lambda e: detect_shadow(),
     "publish_metrics": lambda e: publish_metrics(),
     "tick": lambda e: {**detect_shadow(), **publish_metrics()},
+    "gate_command": lambda e: github_gate.gate_command(e),
 }
 
 

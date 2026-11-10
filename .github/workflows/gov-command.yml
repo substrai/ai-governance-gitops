@@ -1,0 +1,39 @@
+name: gov-command
+
+# `/approve <role> [note]` or `/reject <role> <reason>` on an issue or pull request.
+# The engine re-reads the comment from GitHub, checks the author and the role, then decides
+# the waiting gate as that role's bot and replies on the thread. Runs from main only.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: gov-command-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    if: >-
+      (startsWith(github.event.comment.body, '/approve ') || startsWith(github.event.comment.body, '/reject ')) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: AWS credentials (gh-gov-engine, OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-command-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Ask the engine to decide
+        env:
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          aws lambda invoke --function-name gov-engine --cli-binary-format raw-in-base64-out \
+            --payload "{\"action\":\"gate_command\",\"comment_id\":${COMMENT_ID}}" out.json >/dev/null
+          python3 -c "import json; r=json.load(open('out.json')); print(json.dumps(r)); exit(1 if 'error' in r or 'errorMessage' in r else 0)"

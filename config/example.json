@@ -35,5 +35,8 @@
     "agentEndpointBase": "https://agents.example.com"
   },
   "blockedTerms": [],
-  "githubOidcSubjectPrefix": "repo:substrai@0/ai-governance-gitops@0"
+  "githubOidcSubjectPrefix": "repo:substrai@0/ai-governance-gitops@0",
+  "operators": [
+    "example-operator"
+  ]
 }
