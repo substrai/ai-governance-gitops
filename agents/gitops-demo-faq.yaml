@@ -1,5 +1,5 @@
 name: gitops-demo-faq
-status: active
+status: retired
 purpose: Answers questions about how AI agents are governed through GitHub, for team members.
 department: Technology
 intendedUsers: Team members
@@ -18,8 +18,7 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
-actingRole: developer
-change:
-  type: TOOL
-  summary: Re-apply the menu tool policy after the permission fix
-  tools: [PosMenu___get_menu]
+actingRole: platform
+retire:
+  confirm: gitops-demo-faq
+  reason: Phase 7 test agent, no longer needed
