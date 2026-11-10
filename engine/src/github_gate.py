@@ -179,8 +179,12 @@ def waiting_runs(engine_token: str, issue_number: int, run_id: int | None) -> li
         pr = _http("GET", f"/repos/{REPO}/pulls/{issue_number}", engine_token)
     except GateError as e:
         raise GateError("This is not a pull request, so name the run: `/approve <role> run=<id>`.") from e
-    runs = _http("GET", f"/repos/{REPO}/actions/runs?head_sha={pr['head']['sha']}&status=waiting", engine_token)
-    return [r["id"] for r in runs.get("workflow_runs", [])]
+    shas = [pr["head"]["sha"]] + ([pr["merge_commit_sha"]] if pr.get("merged") and pr.get("merge_commit_sha") else [])
+    ids: list[int] = []
+    for sha in shas:  # a merged PR's deploy runs on its merge commit on main
+        runs = _http("GET", f"/repos/{REPO}/actions/runs?head_sha={sha}&status=waiting", engine_token)
+        ids += [r["id"] for r in runs.get("workflow_runs", []) if r["id"] not in ids]
+    return ids
 
 
 def gate_command(event: dict) -> dict:
