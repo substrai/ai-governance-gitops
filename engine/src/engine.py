@@ -635,12 +635,36 @@ def apply_tool_policy(agent: str, st: dict, tools: list) -> str:
                  f'  resource == AgentCore::Gateway::"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:gateway/{gw}"\n);')
     name = "gov_" + re.sub(r"[^a-z0-9_]", "_", agent) + "_tools"
     existing = next((p for p in ac.list_policies(policyEngineId=pe).get("policies", []) if p.get("name") == name), None)
+    if existing and existing.get("status", "").endswith("FAILED"):
+        ac.delete_policy(policyEngineId=pe, policyId=existing["policyId"])  # a failed policy cannot be updated in place
+        _policy_wait(pe, existing["policyId"], gone=True)
+        existing = None
     if existing:
         ac.update_policy(policyEngineId=pe, policyId=existing["policyId"], definition={"cedar": {"statement": statement}})
-        return f"Cedar policy {name} updated ({len(tools)} tools)"
-    ac.create_policy(policyEngineId=pe, name=name, definition={"cedar": {"statement": statement}},
-                     description=f"Tools allowed for governed agent {agent} (managed by GOV-04)")
-    return f"Cedar policy {name} created ({len(tools)} tools)"
+        pid, verb = existing["policyId"], "updated"
+    else:
+        pid = ac.create_policy(policyEngineId=pe, name=name, definition={"cedar": {"statement": statement}},
+                               description=f"Tools allowed for governed agent {agent} (managed by GOV-04)")["policyId"]
+        verb = "created"
+    p = _policy_wait(pe, pid)
+    if p.get("status") != "ACTIVE":
+        raise GovError(f"Cedar policy {name} is {p.get('status')}: {'; '.join(p.get('statusReasons') or [])}")
+    return f"Cedar policy {name} {verb} and ACTIVE ({len(tools)} tools)"
+
+
+def _policy_wait(pe: str, pid: str, gone: bool = False, timeout: int = 90) -> dict:
+    """Policy creation is asynchronous: wait until it settles (or disappears, when deleting)."""
+    end = time.time() + timeout
+    while True:
+        try:
+            p = ac.get_policy(policyEngineId=pe, policyId=pid)
+        except ClientError as ex:
+            if gone and ex.response["Error"]["Code"] == "ResourceNotFoundException":
+                return {}
+            raise
+        if not gone and p.get("status") not in ("CREATING", "UPDATING") or time.time() > end:
+            return p
+        time.sleep(3)
 
 
 # --------------------------------------------------------------------------- GOV-05 review
