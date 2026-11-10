@@ -5,7 +5,7 @@ department: Restaurant Operations
 intendedUsers: Restaurant managers
 dataClassification: INTERNAL
 platform: AWS AgentCore
-version: 1.1.0
+version: 1.2.0
 risk:
   personalData: false
   customerFacing: false
@@ -20,5 +20,6 @@ build:
   guardrail: employee-data
 actingRole: developer
 change:
-  type: PROMPT
-  summary: Shorter, friendlier descriptions of each special
+  type: TOOL
+  summary: Read the menu so it can explain each special
+  tools: [PosMenu___get_menu]
