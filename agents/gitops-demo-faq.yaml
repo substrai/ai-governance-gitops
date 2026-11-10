@@ -1,5 +1,5 @@
 name: gitops-demo-faq
-status: build
+status: release
 purpose: Answers questions about how AI agents are governed through GitHub, for team members.
 department: Technology
 intendedUsers: Team members
@@ -18,3 +18,4 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
+actingRole: developer
