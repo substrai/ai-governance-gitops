@@ -652,6 +652,20 @@ def apply_tool_policy(agent: str, st: dict, tools: list) -> str:
     return f"Cedar policy {name} {verb} and ACTIVE ({len(tools)} tools)"
 
 
+def remove_tool_policy(agent: str, st: dict) -> str | None:
+    """Delete the Cedar policy GOV-04 created for this agent, if any. Returns its name."""
+    pe = ((st.get("links") or {}).get("policyEngine") or {}).get("id")
+    if not pe:
+        return None
+    name = "gov_" + re.sub(r"[^a-z0-9_]", "_", agent) + "_tools"
+    for p in ac.list_policies(policyEngineId=pe).get("policies", []):
+        if p.get("name") == name:
+            ac.delete_policy(policyEngineId=pe, policyId=p["policyId"])
+            _policy_wait(pe, p["policyId"], gone=True)
+            return name
+    return None
+
+
 def _policy_wait(pe: str, pid: str, gone: bool = False, timeout: int = 90) -> dict:
     """Policy creation is asynchronous: wait until it settles (or disappears, when deleting)."""
     end = time.time() + timeout
@@ -872,6 +886,10 @@ def execute_retirement(agent: str, st: dict, approver: str) -> dict:
                 update_state(agent, retirement={**job, "steps": steps})
                 log_event(agent, "RETIREMENT_FAILED", "gov-engine", step=s)
                 raise GovError(f"Retirement stopped at '{s['label']}': {s['result']}. Run GOV-06 again to resume.") from ex
+    removed = remove_tool_policy(agent, st)
+    if removed:
+        steps.append({"kind": "toolPolicy", "label": "Delete the agent's Cedar tool policy", "id": removed, "action": "DELETE",
+                      "why": "owned by this agent", "status": "DONE", "result": "deleted"})
     update_state(agent, stage="RETIRED", retiredAt=iso(), retirement={**job, "steps": steps}, nextReviewDue=None)
     log_event(agent, "RETIRED", d["approver"], steps=[(s["kind"], s["status"], s.get("result")) for s in steps])
     return {"message": "Retired: " + "; ".join(f"{s['label']} {s['status']}" for s in steps)}
