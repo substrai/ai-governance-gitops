@@ -42,9 +42,9 @@ cd infra && GOV_CONFIG=config/example.json cdk synth --quiet
 
 | Phase | Scope | State |
 | --- | --- | --- |
-| 0–1 | Code in the repo, parameterised config, credential-free CI | this commit |
-| 2 | Spikes: GitHub App approvals, A2A through the gateway | next |
-| 3 | One-time OIDC bootstrap | planned |
-| 4 | Infra pipeline (plan on PR, deploy on main behind `infra-prod`) | planned |
+| 0–1 | Code in the repo, parameterised config, credential-free CI | done |
+| 2 | Spikes: GitHub App approvals, A2A through the gateway | done |
+| 3 | One-time OIDC bootstrap (`GitHubBootstrap`) | done |
+| 4 | Infra pipeline: `infra-plan` (redacted diff on PRs), `infra-deploy` (main, behind `infra-prod`) | this change |
 | 5–7 | Role bots, engine changes, governance workflows | planned |
 | 8–9 | Cutover, demo video | planned |
