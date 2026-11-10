@@ -1,0 +1,60 @@
+name: gov-apply
+run-name: "${{ inputs.step }} · ${{ inputs.agent }}"
+
+# Started by gov-agent on a pull request's gov/<agent>/<step> branch, after the engine planned the step.
+# Waits at the step's environment gate until the owning role bot decides, then the engine applies it.
+# Starting it by hand achieves nothing extra: the gate still needs the role bot, and the engine checks
+# that the approval belongs to this run, this agent and the right role.
+on:
+  workflow_dispatch:
+    inputs:
+      agent: {description: Agent, required: true}
+      pr: {description: Pull request number, required: true}
+      gate: {description: Environment gate (empty when pre-approved by policy), required: false, default: ""}
+      apply: {description: Engine action, required: true}
+      step: {description: Lifecycle step, required: true}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: gov-apply-${{ inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  gated:
+    if: inputs.gate != '' && startsWith(github.ref_name, 'gov/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.gate }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-apply-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply ${{ inputs.step }}
+        run: python scripts/gov_invoke.py "${{ inputs.apply }}" --manifest "agents/${{ inputs.agent }}.yaml" --pr "${{ inputs.pr }}"
+
+  pre-approved:
+    if: inputs.gate == '' && startsWith(github.ref_name, 'gov/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: gov-change-preapproved
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: pip install --quiet pyyaml
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
+          role-session-name: gov-apply-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Apply ${{ inputs.step }} (pre-approved by policy)
+        run: python scripts/gov_invoke.py "${{ inputs.apply }}" --manifest "agents/${{ inputs.agent }}.yaml" --pr "${{ inputs.pr }}"
