@@ -1,5 +1,5 @@
 name: menu-specials-agent
-status: build
+status: release
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
@@ -18,3 +18,4 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
+actingRole: developer
