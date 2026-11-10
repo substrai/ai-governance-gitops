@@ -4,10 +4,11 @@ run-name: "gov · ${{ github.head_ref }}"
 # The agent lifecycle as pull requests. A PR from branch gov/<agent>/<step> changes agents/<agent>.yaml;
 # its `status` says what is asked for: requested (GOV-01/07), build (GOV-02), release (GOV-03),
 # active with a new version and `change` (GOV-04), retired (GOV-06).
-#   plan   the engine checks the request, records it, and posts the result on the PR
-#   gate   the job waits at that step's environment until the owning role bot decides
-#          (`/approve <role>` or `/reject <role> <reason>` on the PR)
-#   apply  the engine carries out the approved step
+#   plan   (this workflow) the engine checks the request, records it, and posts the result on the PR
+#   apply  (gov-apply, started here on the PR's gov/* branch) waits at that step's environment gate
+#          until the owning role bot decides (`/approve <role>` or `/reject <role> <reason>` on the PR),
+#          then the engine carries out the step. It runs on the branch, not the PR merge ref, so the
+#          environments' gov/* branch rules apply.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -16,6 +17,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: write   # start gov-apply on the PR branch
 
 concurrency:
   group: gov-agent-${{ github.event.pull_request.number }}
@@ -64,43 +66,12 @@ jobs:
           python scripts/gov_invoke.py gh_plan --manifest agents/${{ steps.which.outputs.agent }}.yaml
           --pr ${{ github.event.pull_request.number }} --outputs step,gate,apply
 
-  gated:
-    needs: plan
-    if: needs.plan.outputs.gate != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: ${{ needs.plan.outputs.gate }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: pip install --quiet pyyaml
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
-          role-session-name: gov-apply-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Apply ${{ needs.plan.outputs.step }}
+      - name: Start the gated apply on the PR branch
+        if: steps.plan.outputs.apply != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
         run: >
-          python scripts/gov_invoke.py ${{ needs.plan.outputs.apply }} --manifest agents/${{ needs.plan.outputs.agent }}.yaml
-          --pr ${{ github.event.pull_request.number }}
-
-  pre-approved:
-    needs: plan
-    if: needs.plan.outputs.gate == '' && needs.plan.outputs.apply != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: pip install --quiet pyyaml
-      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
-          role-session-name: gov-apply-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION }}
-      - name: Apply ${{ needs.plan.outputs.step }} (pre-approved by policy)
-        run: >
-          python scripts/gov_invoke.py ${{ needs.plan.outputs.apply }} --manifest agents/${{ needs.plan.outputs.agent }}.yaml
-          --pr ${{ github.event.pull_request.number }}
+          gh workflow run gov-apply.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"
+          -f agent=${{ steps.which.outputs.agent }} -f pr=${{ github.event.pull_request.number }}
+          -f gate="${{ steps.plan.outputs.gate }}" -f apply=${{ steps.plan.outputs.apply }} -f step=${{ steps.plan.outputs.step }}
