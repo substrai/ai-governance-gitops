@@ -34,7 +34,7 @@ API = "https://api.github.com"
 GATE_ROLE = {
     "gov-intake": "security", "gov-release": "security", "gov-change": "security", "gov-suspend": "security",
     "gov-build": "platform", "gov-review": "owner", "gov-retire": "admin", "infra-prod": "admin",
-    "gov-audit": "auditor", "gov-maintenance": "admin",
+    "gov-audit": "auditor", "gov-maintenance": "admin", "gov-review-security": "security",
 }
 ROLES = {"security", "platform", "admin", "owner", "auditor"}
 PAST = {"approve": "approved", "reject": "rejected"}
@@ -166,6 +166,7 @@ def forbidden_roles(env: str, st: dict) -> dict[str, str]:
         "gov-release": {"owner": roles.get("owner"), "release submitter": st.get("submittedByRole")},
         "gov-change": {"change requester": pending.get("requestedByRole"), "owner": roles.get("owner")},
         "gov-review": {"owner": roles.get("owner")},
+        "gov-review-security": {"owner": roles.get("owner")},
         "gov-retire": {"retirement requester": retirement.get("requestedByRole")},
         "gov-suspend": {"suspension requester": st.get("suspensionRequestedByRole")},
     }.get(env, {})

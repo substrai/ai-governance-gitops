@@ -2,7 +2,7 @@ name: gov-maintenance
 run-name: "maintenance · ${{ inputs.task }}"
 
 # One-off cutover tasks. The dry run lists exactly what would change (job summary); the apply job
-# waits at gov-maintenance until the admin role bot approves (`/approve admin run=<id>` on any issue).
+# waits at gov-maintenance until the admin role bot approves (`/approve admin run=<id>` on the issue the engine opens).
 on:
   workflow_dispatch:
     inputs:
@@ -22,6 +22,8 @@ jobs:
   dry-run:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      issue: ${{ steps.dry.outputs.issue }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,8 +34,9 @@ jobs:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-gov-engine
           role-session-name: maintenance-${{ github.run_id }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: What would change
-        run: python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=dry-run
+      - name: What would change (the engine opens an issue listing it)
+        id: dry
+        run: python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=dry-run --outputs issue
 
   apply:
     needs: dry-run
@@ -51,4 +54,6 @@ jobs:
           role-session-name: maintenance-${{ github.run_id }}
           aws-region: ${{ vars.AWS_REGION }}
       - name: Apply
-        run: python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=apply
+        run: >
+          python scripts/gov_invoke.py gh_maintenance --set "task=${{ inputs.task }}" --set mode=apply
+          --set "issue=${{ needs.dry-run.outputs.issue }}"
