@@ -1,0 +1,37 @@
+name: oidc-check
+
+# Proves GitHub -> AWS trust works with no stored keys: assumes gh-infra-plan through OIDC,
+# then reads the private config parameter. Prints only non-sensitive facts.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Assume gh-infra-plan with OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/gh-infra-plan
+          role-session-name: oidc-check-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Who am I (account masked by GitHub)
+        run: aws sts get-caller-identity --query Arn --output text
+
+      - name: Read private config (prints key names only)
+        run: |
+          aws ssm get-parameter --name /ai-gov/config --query Parameter.Value --output text \
+            | python3 -c "import json,sys; c=json.load(sys.stdin); print('config keys:', sorted(c))"
+
+      - name: Cannot read governance data (expect AccessDenied)
+        run: |
+          if aws dynamodb scan --table-name gov-lifecycle --max-items 1 >/dev/null 2>&1; then
+            echo "::error::gh-infra-plan can read governance data; it must not"; exit 1
+          fi
+          echo "Denied as expected: plan role cannot read gov-lifecycle"
