@@ -1,5 +1,5 @@
 name: menu-specials-assistant
-status: active
+status: retired
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
@@ -18,7 +18,7 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
-actingRole: developer
-change:
-  type: PROMPT
-  summary: Shorter, friendlier descriptions of each special
+actingRole: platform
+retire:
+  confirm: menu-specials-assistant
+  reason: Recording take interrupted; agent retired before the final take
