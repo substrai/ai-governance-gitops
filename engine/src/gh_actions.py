@@ -447,4 +447,10 @@ def run(action: str, event: dict) -> dict:
         if event.get("pr"):
             G.comment(int(event["pr"]), redact(f"**Governance: not done**\n\n{ex}", event))
         return {"error": redact(str(ex), event)}
+    except Exception as ex:  # unexpected (e.g. an AWS error): never let its raw text reach the public repository
+        print(f"{action} failed: {type(ex).__name__}: {ex}")  # full detail stays in the engine's CloudWatch log
+        msg = redact(f"{type(ex).__name__}: {ex}", event)
+        if event.get("pr"):
+            G.comment(int(event["pr"]), f"**Governance: failed unexpectedly**\n\n{msg}")
+        return {"error": msg}
     return json.loads(redact(json.dumps(res, default=str), event))

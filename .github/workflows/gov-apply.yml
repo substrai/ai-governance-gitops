@@ -22,6 +22,9 @@ concurrency:
   group: gov-apply-${{ inputs.pr }}
   cancel-in-progress: true
 
+env:
+  GOV_PRIVATE_VALUES: ${{ secrets.GOV_PRIVATE_VALUES }}
+
 jobs:
   gated:
     if: inputs.gate != '' && startsWith(github.ref_name, 'gov/')

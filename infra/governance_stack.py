@@ -125,6 +125,8 @@ class NoUiGovernanceStack(Stack):
             iam.PolicyStatement(sid="A2ADemonstration", actions=["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:InvokeGateway"],
                                 resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:runtime/*",
                                            f"arn:aws:bedrock-agentcore:{region}:{acct}:gateway/*"]),
+            iam.PolicyStatement(sid="ToolPoliciesOnGateways", actions=["bedrock-agentcore:ManageResourceScopedPolicy"],
+                                resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:gateway/*"]),
             iam.PolicyStatement(sid="ManageAgentToolPolicies", actions=["bedrock-agentcore:CreatePolicy", "bedrock-agentcore:UpdatePolicy",
                                                                         "bedrock-agentcore:GetPolicy"],
                                 resources=[f"arn:aws:bedrock-agentcore:{region}:{acct}:policy-engine/{POLICY_ENGINE}",
