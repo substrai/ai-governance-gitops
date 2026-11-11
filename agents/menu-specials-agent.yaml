@@ -1,5 +1,5 @@
 name: menu-specials-agent
-status: active
+status: retired
 purpose: Suggests the daily menu specials to restaurant managers and explains their ingredients.
 department: Restaurant Operations
 intendedUsers: Restaurant managers
@@ -18,8 +18,7 @@ roles:
   owner: developer
 build:
   guardrail: employee-data
-actingRole: developer
-change:
-  type: TOOL
-  summary: Read the menu so it can explain each special
-  tools: [PosMenu___get_menu]
+actingRole: platform
+retire:
+  confirm: menu-specials-agent
+  reason: Demo agent, no longer needed
